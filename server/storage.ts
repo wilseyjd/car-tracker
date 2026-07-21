@@ -371,18 +371,17 @@ class DatabaseStorage implements IStorage {
       ? userVehicles.filter((v) => v.id === vehicleId)
       : userVehicles;
 
-    // Respects the optional date range: drives totalSpend, byCategory, byMonth, expenseCount.
-    const rangedExpenses = await this.getExpenses(userId, {
-      vehicleId,
-      from,
-      to,
-    });
-    // Always the full history: the trailing-average and cost/mile trend stats describe an
-    // ongoing trend, not a snapshot of whatever window is currently selected.
-    const fullHistory =
+    // Fetched once, unbounded; the optional date range is applied in-memory below so a
+    // single query covers both the range-scoped totals and the trend stats that always
+    // need full history, instead of hitting the database twice.
+    const fullHistory = await this.getExpenses(userId, { vehicleId });
+    const rangedExpenses =
       from || to
-        ? await this.getExpenses(userId, { vehicleId })
-        : rangedExpenses;
+        ? fullHistory.filter(
+            (e) =>
+              (!from || e.expenseDate >= from) && (!to || e.expenseDate <= to),
+          )
+        : fullHistory;
     const categories = await this.getCategories(userId);
 
     const totalSpend = rangedExpenses.reduce(
@@ -402,6 +401,14 @@ class DatabaseStorage implements IStorage {
       twoYearsAgo,
       yearAgo,
     );
+
+    // The monthly trend chart respects an explicit date range same as the other scoped
+    // stats; with no range selected it defaults to trailing 12 months rather than a
+    // user's entire history, so it doesn't render dozens of unbounded bars over time.
+    const chartExpenses =
+      from || to
+        ? rangedExpenses
+        : fullHistory.filter((e) => new Date(e.expenseDate) >= yearAgo);
 
     // Cost per mile: only meaningful for a single vehicle's odometer history, and always
     // computed against lifetime spend so it doesn't shift with the date-range filter.
@@ -426,12 +433,14 @@ class DatabaseStorage implements IStorage {
 
     const categoryName = new Map(categories.map((c) => [c.id, c.name]));
     const byCategoryMap = new Map<string, number>();
-    const byMonthMap = new Map<string, number>();
     for (const e of rangedExpenses) {
       byCategoryMap.set(
         e.categoryId,
         (byCategoryMap.get(e.categoryId) ?? 0) + parseFloat(e.amount),
       );
+    }
+    const byMonthMap = new Map<string, number>();
+    for (const e of chartExpenses) {
       const monthKey = e.expenseDate.slice(0, 7); // YYYY-MM
       byMonthMap.set(monthKey, (byMonthMap.get(monthKey) ?? 0) + parseFloat(e.amount));
     }
