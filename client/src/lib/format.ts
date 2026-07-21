@@ -1,0 +1,32 @@
+export function formatMoney(value: number | string | null | undefined): string {
+  const n = typeof value === "string" ? parseFloat(value) : value;
+  if (n == null || Number.isNaN(n)) return "—";
+  return n.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+  });
+}
+
+export function formatDate(value: string | null | undefined): string {
+  if (!value) return "—";
+  // value is YYYY-MM-DD; construct as local date to avoid TZ shift
+  const [y, m, d] = value.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+export function formatMiles(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return `${value.toLocaleString("en-US")} mi`;
+}
+
+export function todayISO(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
