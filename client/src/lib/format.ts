@@ -32,6 +32,21 @@ export function formatMonth(value: string): string {
   });
 }
 
+// value's format depends on granularity: YYYY-MM-DD (week start) for "week",
+// YYYY-MM for "month", YYYY for "year" — matches SummaryReport.byPeriod.
+export function formatPeriod(
+  value: string,
+  granularity: "week" | "month" | "year",
+): string {
+  if (granularity === "year") return value;
+  if (granularity === "month") return formatMonth(value);
+  const [y, m, d] = value.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function todayISO(): string {
   const now = new Date();
   const y = now.getFullYear();

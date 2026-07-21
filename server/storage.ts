@@ -29,6 +29,7 @@ import {
   type RecurringCadence,
   type SummaryReport,
   type DashboardInsight,
+  type ReportGranularity,
 } from "@shared/schema";
 
 function parseDateOnly(value: string): Date {
@@ -288,6 +289,7 @@ export interface IStorage {
     vehicleId?: string,
     from?: string,
     to?: string,
+    granularity?: ReportGranularity,
   ): Promise<SummaryReport>;
 }
 
@@ -883,11 +885,28 @@ class DatabaseStorage implements IStorage {
     return total / months;
   }
 
+  // Buckets an expense date into its trend-chart period. Week buckets are keyed by the
+  // Monday of that week (as YYYY-MM-DD) rather than an ISO week number, to sidestep
+  // ISO week-numbering edge cases around year boundaries.
+  private periodKey(expenseDate: string, granularity: ReportGranularity): string {
+    if (granularity === "year") return expenseDate.slice(0, 4);
+    if (granularity === "month") return expenseDate.slice(0, 7);
+    const [y, m, d] = expenseDate.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    const day = date.getDay(); // 0=Sun..6=Sat
+    date.setDate(date.getDate() + (day === 0 ? -6 : 1 - day));
+    const yy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
+  }
+
   async getSummary(
     userId: string,
     vehicleId?: string,
     from?: string,
     to?: string,
+    granularity: ReportGranularity = "month",
   ): Promise<SummaryReport> {
     const userVehicles = await this.getVehicles(userId);
     const scoped = vehicleId
@@ -925,13 +944,27 @@ class DatabaseStorage implements IStorage {
       yearAgo,
     );
 
-    // The monthly trend chart respects an explicit date range same as the other scoped
-    // stats; with no range selected it defaults to trailing 12 months rather than a
-    // user's entire history, so it doesn't render dozens of unbounded bars over time.
-    const chartExpenses =
-      from || to
-        ? rangedExpenses
-        : fullHistory.filter((e) => new Date(e.expenseDate) >= yearAgo);
+    // The trend chart respects an explicit date range same as the other scoped stats.
+    // With no range selected, the default window scales with granularity: a year view is
+    // inherently compact (one bar per year) so it stays unbounded, a week view defaults to
+    // a recent 12 weeks, and month keeps its original trailing-12-month default — otherwise
+    // a user with years of history would get dozens of unbounded weekly/monthly bars.
+    let chartExpenses = rangedExpenses;
+    if (!from && !to) {
+      if (granularity === "year") {
+        chartExpenses = fullHistory;
+      } else if (granularity === "week") {
+        const twelveWeeksAgo = new Date(now);
+        twelveWeeksAgo.setDate(twelveWeeksAgo.getDate() - 7 * 12);
+        chartExpenses = fullHistory.filter(
+          (e) => new Date(e.expenseDate) >= twelveWeeksAgo,
+        );
+      } else {
+        chartExpenses = fullHistory.filter(
+          (e) => new Date(e.expenseDate) >= yearAgo,
+        );
+      }
+    }
 
     // Cost per mile: only meaningful for a single vehicle's odometer history, and always
     // computed against lifetime spend so it doesn't shift with the date-range filter.
@@ -962,10 +995,10 @@ class DatabaseStorage implements IStorage {
         (byCategoryMap.get(e.categoryId) ?? 0) + parseFloat(e.amount),
       );
     }
-    const byMonthMap = new Map<string, number>();
+    const byPeriodMap = new Map<string, number>();
     for (const e of chartExpenses) {
-      const monthKey = e.expenseDate.slice(0, 7); // YYYY-MM
-      byMonthMap.set(monthKey, (byMonthMap.get(monthKey) ?? 0) + parseFloat(e.amount));
+      const key = this.periodKey(e.expenseDate, granularity);
+      byPeriodMap.set(key, (byPeriodMap.get(key) ?? 0) + parseFloat(e.amount));
     }
     const byCategory = Array.from(byCategoryMap.entries())
       .map(([categoryId, total]) => ({
@@ -974,9 +1007,9 @@ class DatabaseStorage implements IStorage {
         total: Math.round(total * 100) / 100,
       }))
       .sort((a, b) => b.total - a.total);
-    const byMonth = Array.from(byMonthMap.entries())
-      .map(([month, total]) => ({ month, total: Math.round(total * 100) / 100 }))
-      .sort((a, b) => a.month.localeCompare(b.month));
+    const byPeriod = Array.from(byPeriodMap.entries())
+      .map(([period, total]) => ({ period, total: Math.round(total * 100) / 100 }))
+      .sort((a, b) => a.period.localeCompare(b.period));
 
     const insights = computeDashboardInsights(fullHistory, categoryName);
 
@@ -993,7 +1026,8 @@ class DatabaseStorage implements IStorage {
       milesDriven,
       expenseCount: rangedExpenses.length,
       byCategory,
-      byMonth,
+      granularity,
+      byPeriod,
       insights,
     };
   }
