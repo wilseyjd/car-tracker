@@ -39,13 +39,20 @@ import {
 import { VehicleFormDialog } from "@/components/VehicleFormDialog";
 import { QueryError } from "@/components/QueryError";
 import { CHART_COLORS } from "@/lib/chart-colors";
-import { formatDate, formatMiles, formatMonth, formatMoney } from "@/lib/format";
+import { formatDate, formatMiles, formatPeriod, formatMoney } from "@/lib/format";
 import type {
   Expense,
   ExpenseCategory,
+  ReportGranularity,
   SummaryReport,
   Vehicle,
 } from "@shared/schema";
+
+const GRANULARITIES: { value: ReportGranularity; label: string }[] = [
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "year", label: "Year" },
+];
 
 function StatCard({
   title,
@@ -101,6 +108,7 @@ export default function Dashboard() {
   const [addVehicleOpen, setAddVehicleOpen] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [granularity, setGranularity] = useState<ReportGranularity>("month");
 
   const {
     data: vehicles,
@@ -122,6 +130,7 @@ export default function Dashboard() {
   if (vehicleParam) summaryParams.set("vehicleId", vehicleParam);
   if (from) summaryParams.set("from", from);
   if (to) summaryParams.set("to", to);
+  summaryParams.set("granularity", granularity);
   const summaryQuery = summaryParams.toString();
   const summaryUrl = `/api/reports/summary${summaryQuery ? `?${summaryQuery}` : ""}`;
 
@@ -167,11 +176,11 @@ export default function Dashboard() {
 
   const trendData = useMemo(
     () =>
-      (summary?.byMonth ?? []).map((m) => ({
-        month: formatMonth(m.month),
-        total: m.total,
+      (summary?.byPeriod ?? []).map((p) => ({
+        period: formatPeriod(p.period, summary?.granularity ?? granularity),
+        total: p.total,
       })),
-    [summary],
+    [summary, granularity],
   );
 
   if (vehiclesLoading) {
@@ -336,8 +345,24 @@ export default function Dashboard() {
           </div>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
               <CardTitle className="text-base">Spend Over Time</CardTitle>
+              <div className="flex items-center rounded-md border p-0.5">
+                {GRANULARITIES.map((g) => (
+                  <button
+                    key={g.value}
+                    type="button"
+                    onClick={() => setGranularity(g.value)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                      granularity === g.value
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {g.label}
+                  </button>
+                ))}
+              </div>
             </CardHeader>
             <CardContent>
               {trendData.length > 0 ? (
@@ -345,7 +370,7 @@ export default function Dashboard() {
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={trendData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                       <XAxis
-                        dataKey="month"
+                        dataKey="period"
                         tickLine={false}
                         axisLine={false}
                         fontSize={12}

@@ -255,7 +255,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     isAuthenticated,
     async (req, res, next) => {
       try {
-        const { vehicleId, from, to } = req.query as Record<
+        const { vehicleId, from, to, granularity } = req.query as Record<
           string,
           string | undefined
         >;
@@ -263,7 +263,19 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           const vehicle = await ownedVehicle(req, res, vehicleId);
           if (!vehicle) return;
         }
-        res.json(await storage.getSummary(getUserId(req), vehicleId, from, to));
+        const validGranularity =
+          granularity === "week" || granularity === "year"
+            ? granularity
+            : "month";
+        res.json(
+          await storage.getSummary(
+            getUserId(req),
+            vehicleId,
+            from,
+            to,
+            validGranularity,
+          ),
+        );
       } catch (e) {
         next(e);
       }
