@@ -255,12 +255,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     isAuthenticated,
     async (req, res, next) => {
       try {
-        const vehicleId = req.query.vehicleId as string | undefined;
+        const { vehicleId, from, to } = req.query as Record<
+          string,
+          string | undefined
+        >;
         if (vehicleId) {
           const vehicle = await ownedVehicle(req, res, vehicleId);
           if (!vehicle) return;
         }
-        res.json(await storage.getSummary(getUserId(req), vehicleId));
+        res.json(await storage.getSummary(getUserId(req), vehicleId, from, to));
       } catch (e) {
         next(e);
       }

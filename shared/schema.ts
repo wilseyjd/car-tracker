@@ -181,9 +181,11 @@ export type InsertExpense = z.infer<typeof insertExpenseSchema>;
 export type SummaryReport = {
   totalSpend: number;
   monthlySpend: number; // trailing 12 months average (or since first expense if newer)
+  monthlySpendPrior: number | null; // same average for the 12 months before that, for comparison
   costPerMile: number | null;
   currentOdometer: number | null;
   milesDriven: number | null;
   expenseCount: number;
   byCategory: { categoryId: string; name: string; total: number }[];
+  byMonth: { month: string; total: number }[]; // YYYY-MM, chronological
 };

@@ -1,8 +1,24 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Car, DollarSign, Gauge, Plus, TrendingUp } from "lucide-react";
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import {
+  Bar,
+  BarChart,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+} from "recharts";
+import {
+  Car,
+  DollarSign,
+  Gauge,
+  Plus,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -11,6 +27,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -20,21 +37,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { VehicleFormDialog } from "@/components/VehicleFormDialog";
-import { formatDate, formatMiles, formatMoney } from "@/lib/format";
+import { QueryError } from "@/components/QueryError";
+import { CHART_COLORS } from "@/lib/chart-colors";
+import { formatDate, formatMiles, formatMonth, formatMoney } from "@/lib/format";
 import type {
   Expense,
   ExpenseCategory,
   SummaryReport,
   Vehicle,
 } from "@shared/schema";
-
-const CHART_COLORS = [
-  "hsl(var(--chart-1))",
-  "hsl(var(--chart-2))",
-  "hsl(var(--chart-3))",
-  "hsl(var(--chart-4))",
-  "hsl(var(--chart-5))",
-];
 
 function StatCard({
   title,
@@ -45,7 +56,7 @@ function StatCard({
   title: string;
   value: string;
   icon: React.ComponentType<{ className?: string }>;
-  hint?: string;
+  hint?: React.ReactNode;
 }) {
   return (
     <Card>
@@ -61,11 +72,42 @@ function StatCard({
   );
 }
 
+function MonthlyTrendHint({ summary }: { summary: SummaryReport }) {
+  if (summary.monthlySpendPrior == null || summary.monthlySpendPrior === 0) {
+    return <>Trailing 12-month average</>;
+  }
+  const delta =
+    ((summary.monthlySpend - summary.monthlySpendPrior) /
+      summary.monthlySpendPrior) *
+    100;
+  const rounded = Math.round(delta);
+  if (Math.abs(rounded) < 1) {
+    return <>Flat vs prior 12 months</>;
+  }
+  const up = rounded > 0;
+  const Icon = up ? TrendingUp : TrendingDown;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 ${up ? "text-destructive" : "text-emerald-600 dark:text-emerald-400"}`}
+    >
+      <Icon className="h-3 w-3" />
+      {Math.abs(rounded)}% vs prior 12mo
+    </span>
+  );
+}
+
 export default function Dashboard() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>("all");
   const [addVehicleOpen, setAddVehicleOpen] = useState(false);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
-  const { data: vehicles, isLoading: vehiclesLoading } = useQuery<Vehicle[]>({
+  const {
+    data: vehicles,
+    isLoading: vehiclesLoading,
+    isError: vehiclesError,
+    refetch: refetchVehicles,
+  } = useQuery<Vehicle[]>({
     queryKey: ["/api/vehicles"],
   });
 
@@ -76,21 +118,36 @@ export default function Dashboard() {
         ? vehicles[0].id
         : undefined;
 
-  const summaryUrl = vehicleParam
-    ? `/api/reports/summary?vehicleId=${vehicleParam}`
-    : "/api/reports/summary";
+  const summaryParams = new URLSearchParams();
+  if (vehicleParam) summaryParams.set("vehicleId", vehicleParam);
+  if (from) summaryParams.set("from", from);
+  if (to) summaryParams.set("to", to);
+  const summaryQuery = summaryParams.toString();
+  const summaryUrl = `/api/reports/summary${summaryQuery ? `?${summaryQuery}` : ""}`;
 
-  const { data: summary, isLoading: summaryLoading } =
-    useQuery<SummaryReport>({
-      queryKey: [summaryUrl],
-      enabled: !!vehicles && vehicles.length > 0,
-    });
+  const {
+    data: summary,
+    isLoading: summaryLoading,
+    isError: summaryError,
+    refetch: refetchSummary,
+  } = useQuery<SummaryReport>({
+    queryKey: [summaryUrl],
+    enabled: !!vehicles && vehicles.length > 0,
+  });
 
-  const { data: expenses } = useQuery<Expense[]>({
+  const {
+    data: expenses,
+    isError: expensesError,
+    refetch: refetchExpenses,
+  } = useQuery<Expense[]>({
     queryKey: ["/api/expenses"],
     enabled: !!vehicles && vehicles.length > 0,
   });
-  const { data: categories } = useQuery<ExpenseCategory[]>({
+  const {
+    data: categories,
+    isError: categoriesError,
+    refetch: refetchCategories,
+  } = useQuery<ExpenseCategory[]>({
     queryKey: ["/api/categories"],
     enabled: !!vehicles && vehicles.length > 0,
   });
@@ -103,8 +160,19 @@ export default function Dashboard() {
   const recentExpenses = useMemo(() => {
     let list = expenses ?? [];
     if (vehicleParam) list = list.filter((e) => e.vehicleId === vehicleParam);
+    if (from) list = list.filter((e) => e.expenseDate >= from);
+    if (to) list = list.filter((e) => e.expenseDate <= to);
     return list.slice(0, 5);
-  }, [expenses, vehicleParam]);
+  }, [expenses, vehicleParam, from, to]);
+
+  const trendData = useMemo(
+    () =>
+      (summary?.byMonth ?? []).map((m) => ({
+        month: formatMonth(m.month),
+        total: m.total,
+      })),
+    [summary],
+  );
 
   if (vehiclesLoading) {
     return (
@@ -113,6 +181,15 @@ export default function Dashboard() {
           <Skeleton key={i} className="h-28" />
         ))}
       </div>
+    );
+  }
+
+  if (vehiclesError) {
+    return (
+      <QueryError
+        message="We couldn't load your vehicles."
+        onRetry={() => refetchVehicles()}
+      />
     );
   }
 
@@ -140,9 +217,11 @@ export default function Dashboard() {
     );
   }
 
+  const multiVehicleAllSelected = vehicles.length > 1 && !vehicleParam;
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
         {vehicles.length > 1 && (
           <Select
@@ -164,51 +243,132 @@ export default function Dashboard() {
         )}
       </div>
 
-      {summaryLoading || !summary ? (
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            className="w-36"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            aria-label="From date"
+          />
+          <span className="text-muted-foreground text-sm">to</span>
+          <Input
+            type="date"
+            className="w-36"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            aria-label="To date"
+          />
+        </div>
+        {(from || to) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setFrom("");
+              setTo("");
+            }}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+
+      {summaryError ? (
+        <Card>
+          <CardContent>
+            <QueryError
+              message="We couldn't load your cost summary."
+              onRetry={() => refetchSummary()}
+            />
+          </CardContent>
+        </Card>
+      ) : summaryLoading || !summary ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[...Array(4)].map((_, i) => (
             <Skeleton key={i} className="h-28" />
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            title="Total Spend"
-            value={formatMoney(summary.totalSpend)}
-            icon={DollarSign}
-            hint={`${summary.expenseCount} expenses logged`}
-          />
-          <StatCard
-            title="Cost / Month"
-            value={formatMoney(summary.monthlySpend)}
-            icon={TrendingUp}
-            hint="Trailing 12-month average"
-          />
-          <StatCard
-            title="Cost / Mile"
-            value={
-              summary.costPerMile != null
-                ? formatMoney(summary.costPerMile)
-                : "—"
-            }
-            icon={Gauge}
-            hint={
-              summary.milesDriven != null
-                ? `${formatMiles(summary.milesDriven)} driven`
-                : "Log odometer readings"
-            }
-          />
-          <StatCard
-            title="Odometer"
-            value={
-              summary.currentOdometer != null
-                ? formatMiles(summary.currentOdometer)
-                : "—"
-            }
-            icon={Car}
-            hint="Latest reading"
-          />
-        </div>
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              title="Total Spend"
+              value={formatMoney(summary.totalSpend)}
+              icon={DollarSign}
+              hint={`${summary.expenseCount} expenses logged`}
+            />
+            <StatCard
+              title="Cost / Month"
+              value={formatMoney(summary.monthlySpend)}
+              icon={TrendingUp}
+              hint={<MonthlyTrendHint summary={summary} />}
+            />
+            <StatCard
+              title="Cost / Mile"
+              value={
+                summary.costPerMile != null
+                  ? formatMoney(summary.costPerMile)
+                  : "—"
+              }
+              icon={Gauge}
+              hint={
+                summary.costPerMile != null
+                  ? `${formatMiles(summary.milesDriven)} driven`
+                  : multiVehicleAllSelected
+                    ? "Select a single vehicle to see cost/mile"
+                    : "Log odometer readings"
+              }
+            />
+            <StatCard
+              title="Odometer"
+              value={
+                summary.currentOdometer != null
+                  ? formatMiles(summary.currentOdometer)
+                  : "—"
+              }
+              icon={Car}
+              hint="Latest reading"
+            />
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Spend Over Time</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {trendData.length > 0 ? (
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={trendData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                      <XAxis
+                        dataKey="month"
+                        tickLine={false}
+                        axisLine={false}
+                        fontSize={12}
+                        stroke="hsl(var(--muted-foreground))"
+                      />
+                      <Tooltip
+                        formatter={(value) => formatMoney(value as number)}
+                        cursor={{ fill: "hsl(var(--muted))" }}
+                      />
+                      <Bar
+                        dataKey="total"
+                        fill={CHART_COLORS[0]}
+                        radius={[4, 4, 0, 0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground py-12 text-center">
+                  No expenses in this range yet.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </>
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -285,7 +445,15 @@ export default function Dashboard() {
             </Link>
           </CardHeader>
           <CardContent>
-            {recentExpenses.length > 0 ? (
+            {expensesError || categoriesError ? (
+              <QueryError
+                message="We couldn't load your recent expenses."
+                onRetry={() => {
+                  refetchExpenses();
+                  refetchCategories();
+                }}
+              />
+            ) : recentExpenses.length > 0 ? (
               <div className="space-y-3">
                 {recentExpenses.map((e) => (
                   <div

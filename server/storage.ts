@@ -74,7 +74,12 @@ export interface IStorage {
   deleteExpense(id: string): Promise<void>;
 
   // Reports
-  getSummary(userId: string, vehicleId?: string): Promise<SummaryReport>;
+  getSummary(
+    userId: string,
+    vehicleId?: string,
+    from?: string,
+    to?: string,
+  ): Promise<SummaryReport>;
 }
 
 class DatabaseStorage implements IStorage {
@@ -326,50 +331,80 @@ class DatabaseStorage implements IStorage {
   }
 
   // ---- Reports ----
-  async getSummary(userId: string, vehicleId?: string): Promise<SummaryReport> {
+  // Average monthly spend for expenses falling in [rangeStart, rangeEnd), anchored to the
+  // earliest expense in that window rather than rangeStart itself when history is shorter
+  // than the window — otherwise a young window would be diluted by months with no data.
+  private monthlyAverage(
+    allExpenses: Expense[],
+    rangeStart: Date,
+    rangeEnd: Date,
+  ): number | null {
+    const inRange = allExpenses.filter((e) => {
+      const d = new Date(e.expenseDate);
+      return d >= rangeStart && d < rangeEnd;
+    });
+    if (inRange.length === 0) return null;
+    const firstDate = inRange.reduce(
+      (min, e) => (e.expenseDate < min ? e.expenseDate : min),
+      inRange[0].expenseDate,
+    );
+    const effectiveStart = new Date(
+      Math.max(new Date(firstDate).getTime(), rangeStart.getTime()),
+    );
+    const months = Math.max(
+      1,
+      (rangeEnd.getTime() - effectiveStart.getTime()) /
+        (1000 * 60 * 60 * 24 * 30.44),
+    );
+    const total = inRange.reduce((sum, e) => sum + parseFloat(e.amount), 0);
+    return total / months;
+  }
+
+  async getSummary(
+    userId: string,
+    vehicleId?: string,
+    from?: string,
+    to?: string,
+  ): Promise<SummaryReport> {
     const userVehicles = await this.getVehicles(userId);
     const scoped = vehicleId
       ? userVehicles.filter((v) => v.id === vehicleId)
       : userVehicles;
 
-    const allExpenses = await this.getExpenses(userId, { vehicleId });
+    // Respects the optional date range: drives totalSpend, byCategory, byMonth, expenseCount.
+    const rangedExpenses = await this.getExpenses(userId, {
+      vehicleId,
+      from,
+      to,
+    });
+    // Always the full history: the trailing-average and cost/mile trend stats describe an
+    // ongoing trend, not a snapshot of whatever window is currently selected.
+    const fullHistory =
+      from || to
+        ? await this.getExpenses(userId, { vehicleId })
+        : rangedExpenses;
     const categories = await this.getCategories(userId);
 
-    const totalSpend = allExpenses.reduce(
+    const totalSpend = rangedExpenses.reduce(
       (sum, e) => sum + parseFloat(e.amount),
       0,
     );
 
-    // Trailing-12-month average (or since first expense if the history is shorter)
-    let monthlySpend = 0;
-    if (allExpenses.length > 0) {
-      const now = new Date();
-      const yearAgo = new Date(now);
-      yearAgo.setFullYear(yearAgo.getFullYear() - 1);
-      const recent = allExpenses.filter(
-        (e) => new Date(e.expenseDate) >= yearAgo,
-      );
-      const firstDate = recent.length
-        ? recent.reduce(
-            (min, e) => (e.expenseDate < min ? e.expenseDate : min),
-            recent[0].expenseDate,
-          )
-        : null;
-      if (firstDate) {
-        const months = Math.max(
-          1,
-          (now.getTime() - new Date(firstDate).getTime()) /
-            (1000 * 60 * 60 * 24 * 30.44),
-        );
-        const recentTotal = recent.reduce(
-          (sum, e) => sum + parseFloat(e.amount),
-          0,
-        );
-        monthlySpend = recentTotal / months;
-      }
-    }
+    const now = new Date();
+    const yearAgo = new Date(now);
+    yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+    const twoYearsAgo = new Date(now);
+    twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
 
-    // Cost per mile: only meaningful for a single vehicle's odometer history
+    const monthlySpend = this.monthlyAverage(fullHistory, yearAgo, now) ?? 0;
+    const monthlySpendPrior = this.monthlyAverage(
+      fullHistory,
+      twoYearsAgo,
+      yearAgo,
+    );
+
+    // Cost per mile: only meaningful for a single vehicle's odometer history, and always
+    // computed against lifetime spend so it doesn't shift with the date-range filter.
     let currentOdometer: number | null = null;
     let milesDriven: number | null = null;
     let costPerMile: number | null = null;
@@ -379,35 +414,52 @@ class DatabaseStorage implements IStorage {
       if (currentOdometer != null) {
         const baseline = vehicle.purchaseOdometer ?? 0;
         milesDriven = Math.max(0, currentOdometer - baseline);
-        if (milesDriven > 0) costPerMile = totalSpend / milesDriven;
+        if (milesDriven > 0) {
+          const lifetimeTotal = fullHistory.reduce(
+            (sum, e) => sum + parseFloat(e.amount),
+            0,
+          );
+          costPerMile = lifetimeTotal / milesDriven;
+        }
       }
     }
 
     const categoryName = new Map(categories.map((c) => [c.id, c.name]));
     const byCategoryMap = new Map<string, number>();
-    for (const e of allExpenses) {
+    const byMonthMap = new Map<string, number>();
+    for (const e of rangedExpenses) {
       byCategoryMap.set(
         e.categoryId,
         (byCategoryMap.get(e.categoryId) ?? 0) + parseFloat(e.amount),
       );
+      const monthKey = e.expenseDate.slice(0, 7); // YYYY-MM
+      byMonthMap.set(monthKey, (byMonthMap.get(monthKey) ?? 0) + parseFloat(e.amount));
     }
-    const byCategory = [...byCategoryMap.entries()]
+    const byCategory = Array.from(byCategoryMap.entries())
       .map(([categoryId, total]) => ({
         categoryId,
         name: categoryName.get(categoryId) ?? "Unknown",
         total: Math.round(total * 100) / 100,
       }))
       .sort((a, b) => b.total - a.total);
+    const byMonth = Array.from(byMonthMap.entries())
+      .map(([month, total]) => ({ month, total: Math.round(total * 100) / 100 }))
+      .sort((a, b) => a.month.localeCompare(b.month));
 
     return {
       totalSpend: Math.round(totalSpend * 100) / 100,
       monthlySpend: Math.round(monthlySpend * 100) / 100,
+      monthlySpendPrior:
+        monthlySpendPrior != null
+          ? Math.round(monthlySpendPrior * 100) / 100
+          : null,
       costPerMile:
         costPerMile != null ? Math.round(costPerMile * 100) / 100 : null,
       currentOdometer,
       milesDriven,
-      expenseCount: allExpenses.length,
+      expenseCount: rangedExpenses.length,
       byCategory,
+      byMonth,
     };
   }
 }
