@@ -358,7 +358,9 @@ export default function Dashboard() {
                   ? `${formatMiles(summary.milesDriven)} driven`
                   : multiVehicleAllSelected
                     ? "Select a single vehicle to see cost/mile"
-                    : "Log odometer readings"
+                    : summary.milesDriven === 0
+                      ? "No miles driven yet"
+                      : "Log odometer readings"
               }
             />
             <StatCard
