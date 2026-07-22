@@ -263,6 +263,14 @@ export type InsertMaintenanceSchedule = z.infer<
 export type ServiceRecord = typeof serviceRecords.$inferSelect;
 export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
 
+// Rule-based dashboard insight (spend spikes, expense outliers, etc.)
+export type DashboardInsight = {
+  id: string;
+  type: "spend_spike" | "expense_outlier";
+  categoryId: string;
+  message: string;
+};
+
 // Dashboard summary payload
 export type SummaryReport = {
   totalSpend: number;
@@ -272,6 +280,7 @@ export type SummaryReport = {
   milesDriven: number | null;
   expenseCount: number;
   byCategory: { categoryId: string; name: string; total: number }[];
+  insights: DashboardInsight[];
 };
 
 // Maintenance status payload (per schedule item, computed server-side)

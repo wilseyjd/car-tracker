@@ -31,6 +31,7 @@ import {
 import { VehicleFormDialog } from "@/components/VehicleFormDialog";
 import { formatDate, formatMiles, formatMoney } from "@/lib/format";
 import type {
+  DashboardInsight,
   Expense,
   ExpenseCategory,
   MaintenanceItemStatus,
@@ -68,6 +69,28 @@ function StatCard({
         {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+function InsightsStrip({ insights }: { insights: DashboardInsight[] }) {
+  if (insights.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {insights.map((insight) => (
+        <div
+          key={insight.id}
+          className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+        >
+          {insight.type === "spend_spike" ? (
+            <TrendingUp className="h-4 w-4 mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          )}
+          <span>{insight.message}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -184,6 +207,8 @@ export default function Dashboard() {
           </Select>
         )}
       </div>
+
+      {summary && <InsightsStrip insights={summary.insights} />}
 
       {summaryLoading || !summary ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
