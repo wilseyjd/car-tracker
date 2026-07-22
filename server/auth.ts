@@ -171,6 +171,8 @@ export const isAuthenticated: RequestHandler = (req, res, next) => {
   next();
 };
 
-export function getUserId(req: { session: session.SessionData }): string {
+export function getUserId(req: {
+  session: Partial<session.SessionData>;
+}): string {
   return req.session.userId!;
 }

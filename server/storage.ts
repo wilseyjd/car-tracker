@@ -6,7 +6,10 @@ import {
   odometerLogs,
   expenseCategories,
   expenses,
+  maintenanceSchedules,
+  serviceRecords,
   DEFAULT_CATEGORIES,
+  DEFAULT_MAINTENANCE_SCHEDULES,
   type User,
   type Vehicle,
   type InsertVehicle,
@@ -14,12 +17,45 @@ import {
   type ExpenseCategory,
   type Expense,
   type InsertExpense,
+  type MaintenanceSchedule,
+  type InsertMaintenanceSchedule,
+  type ServiceRecord,
+  type InsertServiceRecord,
+  type MaintenanceItemStatus,
+  type MaintenanceStatusLevel,
   type SummaryReport,
 } from "@shared/schema";
+
+function parseDateOnly(value: string): Date {
+  const [y, m, d] = value.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+function formatDateOnly(date: Date): string {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function addMonthsUTC(date: Date, months: number): Date {
+  const next = new Date(date);
+  const day = next.getUTCDate();
+  next.setUTCMonth(next.getUTCMonth() + months);
+  // Clamp month-end overflow (e.g. Jan 31 + 1mo should land on Feb 28/29, not Mar 3)
+  if (next.getUTCDate() !== day) next.setUTCDate(0);
+  return next;
+}
 
 export type ExpenseFilters = {
   vehicleId?: string;
   categoryId?: string;
+  from?: string; // YYYY-MM-DD
+  to?: string;
+};
+
+export type ServiceRecordFilters = {
+  scheduleId?: string;
   from?: string; // YYYY-MM-DD
   to?: string;
 };
@@ -72,6 +108,33 @@ export interface IStorage {
     data: Partial<InsertExpense>,
   ): Promise<Expense | undefined>;
   deleteExpense(id: string): Promise<void>;
+
+  // Maintenance schedules
+  seedDefaultMaintenanceSchedules(vehicleId: string): Promise<void>;
+  getMaintenanceSchedules(vehicleId: string): Promise<MaintenanceSchedule[]>;
+  getMaintenanceSchedule(id: string): Promise<MaintenanceSchedule | undefined>;
+  createMaintenanceSchedule(
+    vehicleId: string,
+    data: InsertMaintenanceSchedule,
+  ): Promise<MaintenanceSchedule>;
+  updateMaintenanceSchedule(
+    id: string,
+    data: Partial<InsertMaintenanceSchedule> & { isArchived?: boolean },
+  ): Promise<MaintenanceSchedule | undefined>;
+  getMaintenanceStatus(vehicleId: string): Promise<MaintenanceItemStatus[]>;
+
+  // Service records
+  getServiceRecords(
+    vehicleId: string,
+    filters?: ServiceRecordFilters,
+  ): Promise<ServiceRecord[]>;
+  getServiceRecord(id: string): Promise<ServiceRecord | undefined>;
+  createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
+  updateServiceRecord(
+    id: string,
+    data: Partial<InsertServiceRecord>,
+  ): Promise<ServiceRecord | undefined>;
+  deleteServiceRecord(id: string): Promise<void>;
 
   // Reports
   getSummary(userId: string, vehicleId?: string): Promise<SummaryReport>;
@@ -179,6 +242,7 @@ class DatabaseStorage implements IStorage {
         source: "manual",
       });
     }
+    await this.seedDefaultMaintenanceSchedules(vehicle.id);
     return vehicle;
   }
 
@@ -193,6 +257,10 @@ class DatabaseStorage implements IStorage {
 
   async deleteVehicle(id: string) {
     await db.delete(odometerLogs).where(eq(odometerLogs.vehicleId, id));
+    await db.delete(serviceRecords).where(eq(serviceRecords.vehicleId, id));
+    await db
+      .delete(maintenanceSchedules)
+      .where(eq(maintenanceSchedules.vehicleId, id));
     await db.delete(expenses).where(eq(expenses.vehicleId, id));
     await db.delete(vehicles).where(eq(vehicles.id, id));
   }
@@ -323,6 +391,220 @@ class DatabaseStorage implements IStorage {
         and(eq(odometerLogs.source, "expense"), eq(odometerLogs.sourceId, id)),
       );
     await db.delete(expenses).where(eq(expenses.id, id));
+  }
+
+  // ---- Maintenance schedules ----
+  async seedDefaultMaintenanceSchedules(vehicleId: string) {
+    await db.insert(maintenanceSchedules).values(
+      DEFAULT_MAINTENANCE_SCHEDULES.map((s) => ({
+        vehicleId,
+        name: s.name,
+        intervalMiles: s.intervalMiles,
+        intervalMonths: s.intervalMonths,
+      })),
+    );
+  }
+
+  async getMaintenanceSchedules(vehicleId: string) {
+    return db
+      .select()
+      .from(maintenanceSchedules)
+      .where(eq(maintenanceSchedules.vehicleId, vehicleId))
+      .orderBy(maintenanceSchedules.name);
+  }
+
+  async getMaintenanceSchedule(id: string) {
+    const [schedule] = await db
+      .select()
+      .from(maintenanceSchedules)
+      .where(eq(maintenanceSchedules.id, id));
+    return schedule;
+  }
+
+  async createMaintenanceSchedule(
+    vehicleId: string,
+    data: InsertMaintenanceSchedule,
+  ) {
+    const [schedule] = await db
+      .insert(maintenanceSchedules)
+      .values({ ...data, vehicleId })
+      .returning();
+    return schedule;
+  }
+
+  async updateMaintenanceSchedule(
+    id: string,
+    data: Partial<InsertMaintenanceSchedule> & { isArchived?: boolean },
+  ) {
+    const [schedule] = await db
+      .update(maintenanceSchedules)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(maintenanceSchedules.id, id))
+      .returning();
+    return schedule;
+  }
+
+  async getMaintenanceStatus(
+    vehicleId: string,
+  ): Promise<MaintenanceItemStatus[]> {
+    const vehicle = await this.getVehicle(vehicleId);
+    const schedules = (await this.getMaintenanceSchedules(vehicleId)).filter(
+      (s) => !s.isArchived,
+    );
+    const currentOdometer = await this.getCurrentOdometer(vehicleId);
+    const todayStr = formatDateOnly(new Date());
+
+    const results: MaintenanceItemStatus[] = [];
+    for (const schedule of schedules) {
+      const [lastService] = await db
+        .select()
+        .from(serviceRecords)
+        .where(
+          and(
+            eq(serviceRecords.vehicleId, vehicleId),
+            eq(serviceRecords.scheduleId, schedule.id),
+          ),
+        )
+        .orderBy(desc(serviceRecords.serviceDate), desc(serviceRecords.createdAt))
+        .limit(1);
+
+      const baselineDate =
+        lastService?.serviceDate ??
+        vehicle?.purchaseDate ??
+        formatDateOnly(schedule.createdAt);
+      const baselineOdometer =
+        lastService?.odometer ?? vehicle?.purchaseOdometer ?? 0;
+
+      const dueByDate =
+        schedule.intervalMonths != null
+          ? formatDateOnly(
+              addMonthsUTC(parseDateOnly(baselineDate), schedule.intervalMonths),
+            )
+          : null;
+      const dueByOdometer =
+        schedule.intervalMiles != null
+          ? baselineOdometer + schedule.intervalMiles
+          : null;
+
+      const daysRemaining =
+        dueByDate != null
+          ? Math.round(
+              (parseDateOnly(dueByDate).getTime() -
+                parseDateOnly(todayStr).getTime()) /
+                (1000 * 60 * 60 * 24),
+            )
+          : null;
+      const milesRemaining =
+        dueByOdometer != null && currentOdometer != null
+          ? dueByOdometer - currentOdometer
+          : null;
+
+      let status: MaintenanceStatusLevel = "ok";
+      if (
+        (daysRemaining != null && daysRemaining < 0) ||
+        (milesRemaining != null && milesRemaining < 0)
+      ) {
+        status = "overdue";
+      } else if (
+        (daysRemaining != null && daysRemaining <= 30) ||
+        (milesRemaining != null && milesRemaining <= 500)
+      ) {
+        status = "due_soon";
+      }
+
+      results.push({
+        schedule,
+        lastService: lastService ?? null,
+        status,
+        dueByDate,
+        dueByOdometer,
+        milesRemaining,
+        daysRemaining,
+      });
+    }
+
+    return results;
+  }
+
+  // ---- Service records ----
+  async getServiceRecords(
+    vehicleId: string,
+    filters: ServiceRecordFilters = {},
+  ) {
+    const conditions = [eq(serviceRecords.vehicleId, vehicleId)];
+    if (filters.scheduleId)
+      conditions.push(eq(serviceRecords.scheduleId, filters.scheduleId));
+    if (filters.from)
+      conditions.push(gte(serviceRecords.serviceDate, filters.from));
+    if (filters.to)
+      conditions.push(lte(serviceRecords.serviceDate, filters.to));
+
+    return db
+      .select()
+      .from(serviceRecords)
+      .where(and(...conditions))
+      .orderBy(desc(serviceRecords.serviceDate), desc(serviceRecords.createdAt));
+  }
+
+  async getServiceRecord(id: string) {
+    const [record] = await db
+      .select()
+      .from(serviceRecords)
+      .where(eq(serviceRecords.id, id));
+    return record;
+  }
+
+  async createServiceRecord(data: InsertServiceRecord) {
+    const [record] = await db
+      .insert(serviceRecords)
+      .values(data)
+      .returning();
+
+    if (record.odometer != null) {
+      await this.createOdometerLog({
+        vehicleId: record.vehicleId,
+        reading: record.odometer,
+        readingDate: record.serviceDate,
+        source: "service",
+        sourceId: record.id,
+      });
+    }
+    return record;
+  }
+
+  async updateServiceRecord(id: string, data: Partial<InsertServiceRecord>) {
+    const [record] = await db
+      .update(serviceRecords)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(serviceRecords.id, id))
+      .returning();
+
+    if (record && data.odometer !== undefined) {
+      await db
+        .delete(odometerLogs)
+        .where(
+          and(eq(odometerLogs.source, "service"), eq(odometerLogs.sourceId, id)),
+        );
+      if (record.odometer != null) {
+        await this.createOdometerLog({
+          vehicleId: record.vehicleId,
+          reading: record.odometer,
+          readingDate: record.serviceDate,
+          source: "service",
+          sourceId: record.id,
+        });
+      }
+    }
+    return record;
+  }
+
+  async deleteServiceRecord(id: string) {
+    await db
+      .delete(odometerLogs)
+      .where(
+        and(eq(odometerLogs.source, "service"), eq(odometerLogs.sourceId, id)),
+      );
+    await db.delete(serviceRecords).where(eq(serviceRecords.id, id));
   }
 
   // ---- Reports ----
