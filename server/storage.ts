@@ -8,6 +8,7 @@ import {
   expenses,
   maintenanceSchedules,
   serviceRecords,
+  recurringCosts,
   DEFAULT_CATEGORIES,
   DEFAULT_MAINTENANCE_SCHEDULES,
   type User,
@@ -23,6 +24,9 @@ import {
   type InsertServiceRecord,
   type MaintenanceItemStatus,
   type MaintenanceStatusLevel,
+  type RecurringCost,
+  type InsertRecurringCost,
+  type RecurringCadence,
   type SummaryReport,
   type DashboardInsight,
 } from "@shared/schema";
@@ -46,6 +50,24 @@ function addMonthsUTC(date: Date, months: number): Date {
   // Clamp month-end overflow (e.g. Jan 31 + 1mo should land on Feb 28/29, not Mar 3)
   if (next.getUTCDate() !== day) next.setUTCDate(0);
   return next;
+}
+
+function addCadence(date: Date, cadence: RecurringCadence): Date {
+  switch (cadence) {
+    case "weekly": {
+      const next = new Date(date);
+      next.setUTCDate(next.getUTCDate() + 7);
+      return next;
+    }
+    case "monthly":
+      return addMonthsUTC(date, 1);
+    case "quarterly":
+      return addMonthsUTC(date, 3);
+    case "semi-annual":
+      return addMonthsUTC(date, 6);
+    case "annual":
+      return addMonthsUTC(date, 12);
+  }
 }
 
 export type ExpenseFilters = {
@@ -249,6 +271,17 @@ export interface IStorage {
   ): Promise<ServiceRecord | undefined>;
   deleteServiceRecord(id: string): Promise<void>;
 
+  // Recurring costs
+  getRecurringCosts(userId: string): Promise<RecurringCost[]>;
+  getRecurringCost(id: string): Promise<RecurringCost | undefined>;
+  createRecurringCost(data: InsertRecurringCost): Promise<RecurringCost>;
+  updateRecurringCost(
+    id: string,
+    data: Partial<InsertRecurringCost> & { isPaused?: boolean },
+  ): Promise<RecurringCost | undefined>;
+  deleteRecurringCost(id: string): Promise<void>;
+  generateRecurringInstances(userId: string): Promise<{ generated: number }>;
+
   // Reports
   getSummary(userId: string, vehicleId?: string): Promise<SummaryReport>;
 }
@@ -374,6 +407,7 @@ class DatabaseStorage implements IStorage {
     await db
       .delete(maintenanceSchedules)
       .where(eq(maintenanceSchedules.vehicleId, id));
+    await db.delete(recurringCosts).where(eq(recurringCosts.vehicleId, id));
     await db.delete(expenses).where(eq(expenses.vehicleId, id));
     await db.delete(vehicles).where(eq(vehicles.id, id));
   }
@@ -718,6 +752,100 @@ class DatabaseStorage implements IStorage {
         and(eq(odometerLogs.source, "service"), eq(odometerLogs.sourceId, id)),
       );
     await db.delete(serviceRecords).where(eq(serviceRecords.id, id));
+  }
+
+  // ---- Recurring costs ----
+  async getRecurringCosts(userId: string) {
+    const vehicleIds = await this.userVehicleIds(userId);
+    if (vehicleIds.length === 0) return [];
+    return db
+      .select()
+      .from(recurringCosts)
+      .where(inArray(recurringCosts.vehicleId, vehicleIds))
+      .orderBy(recurringCosts.name);
+  }
+
+  async getRecurringCost(id: string) {
+    const [template] = await db
+      .select()
+      .from(recurringCosts)
+      .where(eq(recurringCosts.id, id));
+    return template;
+  }
+
+  async createRecurringCost(data: InsertRecurringCost) {
+    const [template] = await db
+      .insert(recurringCosts)
+      .values(data)
+      .returning();
+    return template;
+  }
+
+  async updateRecurringCost(
+    id: string,
+    data: Partial<InsertRecurringCost> & { isPaused?: boolean },
+  ) {
+    const [template] = await db
+      .update(recurringCosts)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(recurringCosts.id, id))
+      .returning();
+    return template;
+  }
+
+  async deleteRecurringCost(id: string) {
+    await db.delete(recurringCosts).where(eq(recurringCosts.id, id));
+  }
+
+  async generateRecurringInstances(userId: string) {
+    const vehicleIds = await this.userVehicleIds(userId);
+    if (vehicleIds.length === 0) return { generated: 0 };
+
+    const templates = await db
+      .select()
+      .from(recurringCosts)
+      .where(inArray(recurringCosts.vehicleId, vehicleIds));
+
+    const todayStr = formatDateOnly(new Date());
+    let generated = 0;
+
+    for (const template of templates) {
+      if (template.isPaused) continue;
+
+      const cadence = template.cadence as RecurringCadence;
+      let cursor = template.lastGeneratedDate
+        ? addCadence(parseDateOnly(template.lastGeneratedDate), cadence)
+        : parseDateOnly(template.startDate);
+      let lastGenerated = template.lastGeneratedDate;
+
+      while (true) {
+        const cursorStr = formatDateOnly(cursor);
+        if (cursorStr > todayStr) break;
+        if (template.endDate && cursorStr > template.endDate) break;
+
+        await this.createExpense({
+          vehicleId: template.vehicleId,
+          categoryId: template.categoryId,
+          amount: template.amount,
+          expenseDate: cursorStr,
+          vendor: template.name,
+          recurringCostId: template.id,
+        } as InsertExpense);
+
+        generated++;
+        lastGenerated = cursorStr;
+        cursor = addCadence(cursor, cadence);
+      }
+
+      if (lastGenerated !== template.lastGeneratedDate) {
+        await db
+          .update(recurringCosts)
+          .set({ lastGeneratedDate: lastGenerated, updatedAt: new Date() })
+          .where(eq(recurringCosts.id, template.id));
+      }
+    }
+
+    return { generated };
   }
 
   // ---- Reports ----

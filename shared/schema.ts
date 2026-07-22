@@ -88,7 +88,45 @@ export const expenseCategories = pgTable("expense_categories", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Expenses (the ledger; recurring instances land here too in Phase 2)
+// Recurring cost templates (car payment, insurance, etc.) — materialize into `expenses`
+export const RECURRING_CADENCES = [
+  "weekly",
+  "monthly",
+  "quarterly",
+  "semi-annual",
+  "annual",
+] as const;
+
+export const recurringCosts = pgTable("recurring_costs", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id")
+    .references(() => vehicles.id)
+    .notNull(),
+  name: text("name").notNull(),
+  categoryId: varchar("category_id")
+    .references(() => expenseCategories.id)
+    .notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  cadence: varchar("cadence", { length: 20 }).notNull(),
+  startDate: date("start_date").notNull(),
+  endDate: date("end_date"),
+  isPaused: boolean("is_paused").default(false).notNull(),
+  lastGeneratedDate: date("last_generated_date"), // date of the last materialized instance
+  // Optional loan fields (used by Vehicle Value & Equity)
+  principalAmount: numeric("principal_amount", { precision: 12, scale: 2 }),
+  interestAmount: numeric("interest_amount", { precision: 12, scale: 2 }),
+  loanOriginalAmount: numeric("loan_original_amount", {
+    precision: 12,
+    scale: 2,
+  }),
+  loanApr: numeric("loan_apr", { precision: 5, scale: 3 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Expenses (the ledger; recurring instances land here too, via recurringCostId)
 export const expenses = pgTable("expenses", {
   id: varchar("id")
     .primaryKey()
@@ -104,7 +142,10 @@ export const expenses = pgTable("expenses", {
   odometer: integer("odometer"),
   vendor: text("vendor"),
   notes: text("notes"),
-  recurringCostId: varchar("recurring_cost_id"), // Phase 2 FK
+  recurringCostId: varchar("recurring_cost_id").references(
+    () => recurringCosts.id,
+    { onDelete: "set null" },
+  ),
   // Fuel-only fields
   gallons: numeric("gallons", { precision: 8, scale: 3 }),
   pricePerGallon: numeric("price_per_gallon", { precision: 6, scale: 3 }),
@@ -233,12 +274,25 @@ export const insertServiceRecordSchema = createInsertSchema(
   updatedAt: true,
 });
 
+export const insertRecurringCostSchema = createInsertSchema(recurringCosts, {
+  cadence: z.enum(RECURRING_CADENCES),
+}).omit({
+  id: true,
+  isPaused: true,
+  lastGeneratedDate: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const updateExpenseSchema = insertExpenseSchema.partial();
 export const updateVehicleSchema = insertVehicleSchema.partial();
 export const updateMaintenanceScheduleSchema = insertMaintenanceScheduleSchema
   .partial()
   .extend({ isArchived: z.boolean().optional() });
 export const updateServiceRecordSchema = insertServiceRecordSchema.partial();
+export const updateRecurringCostSchema = insertRecurringCostSchema
+  .partial()
+  .extend({ isPaused: z.boolean().optional() });
 export const updateCategorySchema = z.object({
   name: z.string().min(1).optional(),
   isArchived: z.boolean().optional(),
@@ -270,6 +324,10 @@ export type DashboardInsight = {
   categoryId: string;
   message: string;
 };
+
+export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
+export type RecurringCost = typeof recurringCosts.$inferSelect;
+export type InsertRecurringCost = z.infer<typeof insertRecurringCostSchema>;
 
 // Dashboard summary payload
 export type SummaryReport = {
