@@ -17,6 +17,8 @@ import {
   updateServiceRecordSchema,
   type InsertExpense,
   type InsertServiceRecord,
+  insertRecurringCostSchema,
+  updateRecurringCostSchema,
 } from "@shared/schema";
 
 const odometerBodySchema = z.object({
@@ -319,6 +321,62 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
   });
 
+  // ---- Recurring Costs ----
+  app.get("/api/recurring", isAuthenticated, async (req, res, next) => {
+    try {
+      res.json(await storage.getRecurringCosts(getUserId(req)));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.post("/api/recurring", isAuthenticated, async (req, res, next) => {
+    try {
+      const parsed = insertRecurringCostSchema.safeParse(req.body);
+      if (!parsed.success) return zodError(res, parsed.error);
+      const vehicle = await ownedVehicle(req, res, parsed.data.vehicleId);
+      if (!vehicle) return;
+      const category = await storage.getCategory(parsed.data.categoryId);
+      if (!category || category.userId !== getUserId(req)) {
+        return res.status(400).json({ message: "Invalid category" });
+      }
+      const recurringCost = await storage.createRecurringCost(parsed.data);
+      res.status(201).json(recurringCost);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.patch("/api/recurring/:id", isAuthenticated, async (req, res, next) => {
+    try {
+      const recurringCost = await storage.getRecurringCost(req.params.id);
+      if (!recurringCost)
+        return res.status(404).json({ message: "Not found" });
+      const vehicle = await ownedVehicle(req, res, recurringCost.vehicleId);
+      if (!vehicle) return;
+      const parsed = updateRecurringCostSchema.safeParse(req.body);
+      if (!parsed.success) return zodError(res, parsed.error);
+      if (parsed.data.categoryId) {
+        const category = await storage.getCategory(parsed.data.categoryId);
+        if (!category || category.userId !== getUserId(req)) {
+          return res.status(400).json({ message: "Invalid category" });
+        }
+      }
+      if (
+        parsed.data.vehicleId &&
+        parsed.data.vehicleId !== recurringCost.vehicleId
+      ) {
+        const target = await ownedVehicle(req, res, parsed.data.vehicleId);
+        if (!target) return;
+      }
+      res.json(
+        await storage.updateRecurringCost(recurringCost.id, parsed.data),
+      );
+    } catch (e) {
+      next(e);
+    }
+  });
+
   app.get(
     "/api/vehicles/:id/maintenance-status",
     isAuthenticated,
@@ -348,6 +406,24 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         res.json(
           await storage.getServiceRecords(vehicle.id, { scheduleId, from, to }),
         );
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/recurring/:id",
+    isAuthenticated,
+    async (req, res, next) => {
+      try {
+        const recurringCost = await storage.getRecurringCost(req.params.id);
+        if (!recurringCost)
+          return res.status(404).json({ message: "Not found" });
+        const vehicle = await ownedVehicle(req, res, recurringCost.vehicleId);
+        if (!vehicle) return;
+        await storage.deleteRecurringCost(recurringCost.id);
+        res.json({ message: "Deleted" });
       } catch (e) {
         next(e);
       }
@@ -397,6 +473,18 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           expenseId,
         } as InsertServiceRecord);
         res.status(201).json(record);
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  app.post(
+    "/api/recurring/generate",
+    isAuthenticated,
+    async (req, res, next) => {
+      try {
+        res.json(await storage.generateRecurringInstances(getUserId(req)));
       } catch (e) {
         next(e);
       }

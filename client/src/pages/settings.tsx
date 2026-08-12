@@ -1,6 +1,17 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  Check,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  Repeat,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,15 +24,55 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { ExpenseCategory } from "@shared/schema";
+import {
+  RecurringCostFormDialog,
+  invalidateRecurringData,
+} from "@/components/RecurringCostFormDialog";
+import { formatDate, formatMoney } from "@/lib/format";
+import type { ExpenseCategory, RecurringCost } from "@shared/schema";
+
+const CADENCE_LABELS: Record<string, string> = {
+  weekly: "Weekly",
+  monthly: "Monthly",
+  quarterly: "Quarterly",
+  "semi-annual": "Semi-annual",
+  annual: "Annual",
+};
 
 export default function Settings() {
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [recurringDialogOpen, setRecurringDialogOpen] = useState(false);
+  const [editingRecurring, setEditingRecurring] =
+    useState<RecurringCost | null>(null);
 
   const { data: categories = [] } = useQuery<ExpenseCategory[]>({
     queryKey: ["/api/categories"],
+  });
+  const { data: recurringCosts = [] } = useQuery<RecurringCost[]>({
+    queryKey: ["/api/recurring"],
+  });
+
+  const categoryName = new Map(categories.map((c) => [c.id, c.name]));
+
+  const pauseMutation = useMutation({
+    mutationFn: ({ id, isPaused }: { id: string; isPaused: boolean }) =>
+      apiRequest("PATCH", `/api/recurring/${id}`, { isPaused }),
+    onSuccess: (_data, { isPaused }) => {
+      invalidateRecurringData();
+      toast.success(isPaused ? "Recurring cost paused" : "Recurring cost resumed");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const deleteRecurringMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/recurring/${id}`),
+    onSuccess: () => {
+      invalidateRecurringData();
+      toast.success("Recurring cost deleted");
+    },
+    onError: (error: Error) => toast.error(error.message),
   });
 
   function invalidate() {
@@ -191,6 +242,123 @@ export default function Settings() {
           )}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Recurring Costs</CardTitle>
+            <CardDescription>
+              Predictable costs like car payment or insurance, logged
+              automatically each period.
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => {
+              setEditingRecurring(null);
+              setRecurringDialogOpen(true);
+            }}
+          >
+            <Plus className="h-4 w-4 mr-1" /> Add
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {recurringCosts.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              No recurring costs yet. Add your car payment or insurance to
+              stop logging it by hand.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {recurringCosts.map((r) => (
+                <div
+                  key={r.id}
+                  className={`flex items-center justify-between gap-2 rounded-md px-2 py-2 hover:bg-muted/50 ${
+                    r.isPaused ? "opacity-60" : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Repeat className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {r.name}
+                        {r.isPaused && (
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            (paused)
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {categoryName.get(r.categoryId)} ·{" "}
+                        {CADENCE_LABELS[r.cadence] ?? r.cadence} · since{" "}
+                        {formatDate(r.startDate)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-sm font-semibold mr-1">
+                      {formatMoney(r.amount)}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      title={r.isPaused ? "Resume" : "Pause"}
+                      onClick={() =>
+                        pauseMutation.mutate({
+                          id: r.id,
+                          isPaused: !r.isPaused,
+                        })
+                      }
+                    >
+                      {r.isPaused ? (
+                        <Play className="h-3.5 w-3.5" />
+                      ) : (
+                        <Pause className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      title="Edit"
+                      onClick={() => {
+                        setEditingRecurring(r);
+                        setRecurringDialogOpen(true);
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      title="Delete"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Delete "${r.name}"? Past logged expenses stay in your ledger, but future instances stop.`,
+                          )
+                        ) {
+                          deleteRecurringMutation.mutate(r.id);
+                        }
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <RecurringCostFormDialog
+        open={recurringDialogOpen}
+        onOpenChange={setRecurringDialogOpen}
+        recurringCost={editingRecurring}
+      />
     </div>
   );
 }

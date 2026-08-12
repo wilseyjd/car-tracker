@@ -5,7 +5,18 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
-import { queryClient } from "./queryClient";
+import { apiRequest, queryClient } from "./queryClient";
+import { invalidateRecurringData } from "@/components/RecurringCostFormDialog";
+
+async function generateRecurringExpenses() {
+  try {
+    await apiRequest("POST", "/api/recurring/generate");
+    invalidateRecurringData();
+  } catch {
+    // Best-effort — the dashboard just reflects whatever was already
+    // materialized if this fails (e.g. offline).
+  }
+}
 
 interface User {
   id: string;
@@ -32,7 +43,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const response = await fetch("/api/auth/user", {
           credentials: "include",
         });
-        setUser(response.ok ? await response.json() : null);
+        if (response.ok) {
+          setUser(await response.json());
+          generateRecurringExpenses();
+        } else {
+          setUser(null);
+        }
       } catch {
         setUser(null);
       } finally {
@@ -59,10 +75,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (username: string, password: string) => {
     setUser(await authPost("/api/auth/login", { username, password }));
+    generateRecurringExpenses();
   };
 
   const register = async (username: string, password: string) => {
     setUser(await authPost("/api/auth/register", { username, password }));
+    generateRecurringExpenses();
   };
 
   const logout = async () => {
