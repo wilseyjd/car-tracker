@@ -23,6 +23,15 @@ export function formatMiles(value: number | null | undefined): string {
   return `${value.toLocaleString("en-US")} mi`;
 }
 
+export function formatMonth(value: string): string {
+  // value is YYYY-MM
+  const [y, m] = value.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", {
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export function todayISO(): string {
   const now = new Date();
   const y = now.getFullYear();
