@@ -32,6 +32,7 @@ import {
   type ValueEstimate,
   type InsertValueEstimate,
   type ValueCurve,
+  type FuelAnalytics,
   type SummaryReport,
   type DashboardInsight,
   type ReportGranularity,
@@ -296,6 +297,10 @@ export interface IStorage {
   getValueCurve(vehicleId: string): Promise<ValueCurve>;
 
   // Reports
+  getFuelAnalytics(
+    userId: string,
+    vehicleId?: string,
+  ): Promise<FuelAnalytics>;
   getSummary(
     userId: string,
     vehicleId?: string,
@@ -1007,6 +1012,136 @@ class DatabaseStorage implements IStorage {
   }
 
   // ---- Reports ----
+  async getFuelAnalytics(
+    userId: string,
+    vehicleId?: string,
+  ): Promise<FuelAnalytics> {
+    const categories = await this.getCategories(userId);
+    const fuelCategory = categories.find((c) => c.name === "Fuel");
+    const allExpenses = fuelCategory
+      ? await this.getExpenses(userId, {
+          vehicleId,
+          categoryId: fuelCategory.id,
+        })
+      : [];
+
+    const priced = allExpenses.filter((e) => e.pricePerGallon != null);
+
+    const priceTrend = [...priced]
+      .sort((a, b) => a.expenseDate.localeCompare(b.expenseDate))
+      .map((e) => ({
+        date: e.expenseDate,
+        pricePerGallon: parseFloat(e.pricePerGallon!),
+      }));
+
+    const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const dayBuckets = new Map<number, { sum: number; count: number }>();
+    for (const e of priced) {
+      const day = parseDateOnly(e.expenseDate).getUTCDay();
+      const bucket = dayBuckets.get(day) ?? { sum: 0, count: 0 };
+      bucket.sum += parseFloat(e.pricePerGallon!);
+      bucket.count += 1;
+      dayBuckets.set(day, bucket);
+    }
+    const byDayOfWeek = DAY_NAMES.map((day, i) => {
+      const bucket = dayBuckets.get(i);
+      return {
+        day,
+        avgPrice: bucket
+          ? Math.round((bucket.sum / bucket.count) * 1000) / 1000
+          : null,
+        fillUps: bucket?.count ?? 0,
+      };
+    });
+
+    // Group by vendor, case/whitespace-insensitively, but display the most common original
+    // casing for that group — free-text vendor entry means "Shell" and "shell" are the same
+    // station and should group together, but "Shell" and "shell #4213" won't (documented
+    // limitation until vendor gets a normalized picker).
+    const vendorGroups = new Map<
+      string,
+      { labelCounts: Map<string, number>; total: number; priceSum: number; priceCount: number }
+    >();
+    for (const e of allExpenses) {
+      const label = (e.vendor ?? "").trim();
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const group = vendorGroups.get(key) ?? {
+        labelCounts: new Map(),
+        total: 0,
+        priceSum: 0,
+        priceCount: 0,
+      };
+      group.labelCounts.set(label, (group.labelCounts.get(label) ?? 0) + 1);
+      group.total += parseFloat(e.amount);
+      if (e.pricePerGallon != null) {
+        group.priceSum += parseFloat(e.pricePerGallon);
+        group.priceCount += 1;
+      }
+      vendorGroups.set(key, group);
+    }
+    const byVendor = Array.from(vendorGroups.entries())
+      .map(([, group]) => {
+        const displayLabel = Array.from(group.labelCounts.entries()).sort(
+          (a, b) => b[1] - a[1],
+        )[0][0];
+        const fillUps = Array.from(group.labelCounts.values()).reduce(
+          (sum, n) => sum + n,
+          0,
+        );
+        return {
+          vendor: displayLabel,
+          fillUps,
+          avgPrice:
+            group.priceCount > 0
+              ? Math.round((group.priceSum / group.priceCount) * 1000) / 1000
+              : null,
+          totalSpent: Math.round(group.total * 100) / 100,
+        };
+      })
+      .sort((a, b) => b.fillUps - a.fillUps);
+
+    const monthGroups = new Map<
+      string,
+      { priceSum: number; priceCount: number; gallons: number; spent: number }
+    >();
+    for (const e of allExpenses) {
+      const key = e.expenseDate.slice(0, 7);
+      const group = monthGroups.get(key) ?? {
+        priceSum: 0,
+        priceCount: 0,
+        gallons: 0,
+        spent: 0,
+      };
+      if (e.pricePerGallon != null) {
+        group.priceSum += parseFloat(e.pricePerGallon);
+        group.priceCount += 1;
+      }
+      if (e.gallons != null) group.gallons += parseFloat(e.gallons);
+      group.spent += parseFloat(e.amount);
+      monthGroups.set(key, group);
+    }
+    const byMonth = Array.from(monthGroups.entries())
+      .map(([month, group]) => ({
+        month,
+        avgPrice:
+          group.priceCount > 0
+            ? Math.round((group.priceSum / group.priceCount) * 1000) / 1000
+            : null,
+        totalGallons: Math.round(group.gallons * 1000) / 1000,
+        totalSpent: Math.round(group.spent * 100) / 100,
+      }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+
+    return {
+      priceTrend,
+      byDayOfWeek,
+      byVendor,
+      byMonth,
+      fillUpCount: allExpenses.length,
+    };
+  }
+
   // Average monthly spend for expenses falling in [rangeStart, rangeEnd), anchored to the
   // earliest expense in that window rather than rangeStart itself when history is shorter
   // than the window — otherwise a young window would be diluted by months with no data.

@@ -391,6 +391,31 @@ export type ValueCurve = {
 
 export type ReportGranularity = "week" | "month" | "year";
 
+// Fuel analytics payload for the gas price deep-dive tab. Scoped to Fuel-category expenses
+// that have a price/gallon recorded — expenses missing that field can't contribute to price
+// trend/comparison views (they can still count toward totalGallons/totalSpent elsewhere).
+export type FuelAnalytics = {
+  priceTrend: { date: string; pricePerGallon: number }[]; // chronological, one point per fill-up
+  byDayOfWeek: {
+    day: string; // "Sun".."Sat"
+    avgPrice: number | null;
+    fillUps: number;
+  }[];
+  byVendor: {
+    vendor: string;
+    fillUps: number;
+    avgPrice: number | null;
+    totalSpent: number;
+  }[];
+  byMonth: {
+    month: string; // YYYY-MM
+    avgPrice: number | null;
+    totalGallons: number;
+    totalSpent: number;
+  }[];
+  fillUpCount: number; // fuel expenses total, including ones missing gallons/price
+};
+
 // Dashboard summary payload
 export type SummaryReport = {
   totalSpend: number;
