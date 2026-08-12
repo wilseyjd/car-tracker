@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Gauge, Pencil, Search, Trash2 } from "lucide-react";
+import { Gauge, Pencil, Search, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,6 +18,7 @@ import {
   ExpenseFormDialog,
   invalidateExpenseData,
 } from "@/components/ExpenseFormDialog";
+import { ImportExpensesDialog } from "@/components/ImportExpensesDialog";
 import { QueryError } from "@/components/QueryError";
 import { apiRequest } from "@/lib/queryClient";
 import { categoryColor } from "@/lib/chart-colors";
@@ -121,6 +122,7 @@ function ExpenseRow({
 
 export default function Expenses() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [vehicleFilter, setVehicleFilter] = useState("all");
@@ -245,11 +247,16 @@ export default function Expenses() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
-        <p className="text-sm text-muted-foreground">
-          {filtered.length} expenses · {formatMoney(filteredTotal)}
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
+          <p className="text-sm text-muted-foreground">
+            {filtered.length} expenses · {formatMoney(filteredTotal)}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+          <Upload className="h-4 w-4 mr-1" /> Import CSV
+        </Button>
       </div>
 
       {/* Filters */}
@@ -425,6 +432,7 @@ export default function Expenses() {
         onOpenChange={setDialogOpen}
         expense={editing}
       />
+      <ImportExpensesDialog open={importOpen} onOpenChange={setImportOpen} />
     </div>
   );
 }
