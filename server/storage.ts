@@ -24,6 +24,7 @@ import {
   type MaintenanceItemStatus,
   type MaintenanceStatusLevel,
   type SummaryReport,
+  type DashboardInsight,
 } from "@shared/schema";
 
 function parseDateOnly(value: string): Date {
@@ -59,6 +60,118 @@ export type ServiceRecordFilters = {
   from?: string; // YYYY-MM-DD
   to?: string;
 };
+
+const monthKey = (dateStr: string) => dateStr.slice(0, 7); // YYYY-MM
+
+function priorMonthKeys(currentMonthKey: string, count: number): string[] {
+  const [year, month] = currentMonthKey.split("-").map(Number);
+  const keys: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    const d = new Date(Date.UTC(year, month - 1 - i, 1));
+    keys.push(
+      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`,
+    );
+  }
+  return keys;
+}
+
+const SPIKE_MIN_CURRENT_SPEND = 20; // ignore tiny categories, too noisy
+const SPIKE_MIN_PRIOR_AVG = 10; // avoid divide-by-near-zero "infinite" spikes
+const SPIKE_THRESHOLD = 0.3; // 30% over trailing 3-month average
+const OUTLIER_MIN_CATEGORY_HISTORY = 3; // need a baseline before calling something "unusual"
+const OUTLIER_RATIO = 2; // 2x the category's historical average
+
+// Rule-based insight generation: spend spikes (this month vs trailing 3-month
+// average per category) and expense outliers (a recent expense well above its
+// category's historical average). Pure function so it's easy to reason about
+// and doesn't require the maintenance-schedule data model (JEF-197) that isn't
+// in yet — missed-service insights can layer in once that lands.
+export function computeDashboardInsights(
+  allExpenses: Expense[],
+  categoryName: Map<string, string>,
+  now: Date = new Date(),
+): DashboardInsight[] {
+  const insights: DashboardInsight[] = [];
+
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const priorKeys = priorMonthKeys(currentMonthKey, 3);
+
+  const currentByCategory = new Map<string, number>();
+  const priorByCategory = new Map<string, number>();
+  for (const e of allExpenses) {
+    const key = monthKey(e.expenseDate);
+    const amount = parseFloat(e.amount);
+    if (key === currentMonthKey) {
+      currentByCategory.set(
+        e.categoryId,
+        (currentByCategory.get(e.categoryId) ?? 0) + amount,
+      );
+    } else if (priorKeys.includes(key)) {
+      priorByCategory.set(
+        e.categoryId,
+        (priorByCategory.get(e.categoryId) ?? 0) + amount,
+      );
+    }
+  }
+
+  const spikes: {
+    categoryId: string;
+    pct: number;
+    current: number;
+    priorAvg: number;
+  }[] = [];
+  for (const [categoryId, current] of Array.from(currentByCategory)) {
+    if (current < SPIKE_MIN_CURRENT_SPEND) continue;
+    const priorAvg = (priorByCategory.get(categoryId) ?? 0) / priorKeys.length;
+    if (priorAvg < SPIKE_MIN_PRIOR_AVG) continue;
+    const pct = (current - priorAvg) / priorAvg;
+    if (pct >= SPIKE_THRESHOLD) spikes.push({ categoryId, pct, current, priorAvg });
+  }
+  spikes.sort((a, b) => b.pct - a.pct);
+  for (const s of spikes.slice(0, 3)) {
+    const name = categoryName.get(s.categoryId) ?? "Unknown";
+    insights.push({
+      id: `spike-${s.categoryId}`,
+      type: "spend_spike",
+      categoryId: s.categoryId,
+      message: `${name} spending is up ${Math.round(s.pct * 100)}% this month ($${s.current.toFixed(2)} vs ~$${s.priorAvg.toFixed(2)} average)`,
+    });
+  }
+
+  const byCategoryHistory = new Map<string, Expense[]>();
+  for (const e of allExpenses) {
+    const list = byCategoryHistory.get(e.categoryId) ?? [];
+    list.push(e);
+    byCategoryHistory.set(e.categoryId, list);
+  }
+
+  const outliers: { expense: Expense; avg: number; ratio: number }[] = [];
+  for (const history of Array.from(byCategoryHistory.values())) {
+    if (history.length < OUTLIER_MIN_CATEGORY_HISTORY + 1) continue;
+    const sorted = [...history].sort((a, b) =>
+      a.expenseDate < b.expenseDate ? 1 : -1,
+    );
+    const [latest, ...rest] = sorted;
+    const restAvg =
+      rest.reduce((sum, e) => sum + parseFloat(e.amount), 0) / rest.length;
+    if (restAvg <= 0) continue;
+    const latestAmount = parseFloat(latest.amount);
+    const ratio = latestAmount / restAvg;
+    if (ratio >= OUTLIER_RATIO) outliers.push({ expense: latest, avg: restAvg, ratio });
+  }
+  outliers.sort((a, b) => b.ratio - a.ratio);
+  for (const o of outliers.slice(0, 2)) {
+    const name = categoryName.get(o.expense.categoryId) ?? "Unknown";
+    insights.push({
+      id: `outlier-${o.expense.id}`,
+      type: "expense_outlier",
+      categoryId: o.expense.categoryId,
+      message: `${name}: $${parseFloat(o.expense.amount).toFixed(2)} on ${o.expense.expenseDate} is notably higher than your typical $${o.avg.toFixed(2)} for this category`,
+    });
+  }
+
+  return insights;
+}
 
 export interface IStorage {
   // Users
@@ -681,6 +794,8 @@ class DatabaseStorage implements IStorage {
       }))
       .sort((a, b) => b.total - a.total);
 
+    const insights = computeDashboardInsights(allExpenses, categoryName);
+
     return {
       totalSpend: Math.round(totalSpend * 100) / 100,
       monthlySpend: Math.round(monthlySpend * 100) / 100,
@@ -690,6 +805,7 @@ class DatabaseStorage implements IStorage {
       milesDriven,
       expenseCount: allExpenses.length,
       byCategory,
+      insights,
     };
   }
 }
