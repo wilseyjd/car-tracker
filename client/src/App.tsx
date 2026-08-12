@@ -10,6 +10,7 @@ import Dashboard from "@/pages/dashboard";
 import Expenses from "@/pages/expenses";
 import Vehicles from "@/pages/vehicles";
 import VehicleDetail from "@/pages/vehicle";
+import Maintenance from "@/pages/maintenance";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -43,6 +44,11 @@ function Router() {
       <Route path="/vehicle/:id">
         <Protected>
           <VehicleDetail />
+        </Protected>
+      </Route>
+      <Route path="/maintenance">
+        <Protected>
+          <Maintenance />
         </Protected>
       </Route>
       <Route path="/settings">

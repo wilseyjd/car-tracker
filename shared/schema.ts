@@ -112,6 +112,65 @@ export const expenses = pgTable("expenses", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Maintenance schedule items (seeded per-vehicle with standard intervals, user-tunable)
+export const maintenanceSchedules = pgTable("maintenance_schedules", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id")
+    .references(() => vehicles.id)
+    .notNull(),
+  name: text("name").notNull(),
+  intervalMiles: integer("interval_miles"),
+  intervalMonths: integer("interval_months"),
+  notes: text("notes"),
+  isArchived: boolean("is_archived").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Default maintenance schedule seeded for each new vehicle
+export const DEFAULT_MAINTENANCE_SCHEDULES: {
+  name: string;
+  intervalMiles: number | null;
+  intervalMonths: number | null;
+}[] = [
+  { name: "Oil & filter change", intervalMiles: 5000, intervalMonths: 6 },
+  { name: "Tire rotation", intervalMiles: 5000, intervalMonths: 6 },
+  { name: "Engine air filter", intervalMiles: 30000, intervalMonths: 36 },
+  { name: "Cabin air filter", intervalMiles: 15000, intervalMonths: 12 },
+  { name: "Brake fluid", intervalMiles: null, intervalMonths: 36 },
+  { name: "Coolant", intervalMiles: 60000, intervalMonths: 60 },
+  { name: "Transmission service", intervalMiles: 60000, intervalMonths: null },
+  { name: "Brake pads (inspect)", intervalMiles: 10000, intervalMonths: 12 },
+  { name: "Battery (inspect/replace)", intervalMiles: null, intervalMonths: 48 },
+  { name: "Wiper blades", intervalMiles: null, intervalMonths: 12 },
+  { name: "Tires (replace)", intervalMiles: 50000, intervalMonths: null },
+];
+
+// Service records (history of maintenance/repairs performed)
+export const serviceRecords = pgTable("service_records", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id")
+    .references(() => vehicles.id)
+    .notNull(),
+  scheduleId: varchar("schedule_id").references(
+    () => maintenanceSchedules.id,
+    { onDelete: "set null" },
+  ),
+  serviceDate: date("service_date").notNull(),
+  odometer: integer("odometer"),
+  shop: text("shop"),
+  notes: text("notes"),
+  expenseId: varchar("expense_id").references(() => expenses.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Default categories seeded for each new user
 export const DEFAULT_CATEGORIES = [
   "Car Payment",
@@ -157,8 +216,29 @@ export const insertExpenseSchema = createInsertSchema(expenses).omit({
   updatedAt: true,
 });
 
+export const insertMaintenanceScheduleSchema = createInsertSchema(
+  maintenanceSchedules,
+).omit({
+  id: true,
+  isArchived: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertServiceRecordSchema = createInsertSchema(
+  serviceRecords,
+).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const updateExpenseSchema = insertExpenseSchema.partial();
 export const updateVehicleSchema = insertVehicleSchema.partial();
+export const updateMaintenanceScheduleSchema = insertMaintenanceScheduleSchema
+  .partial()
+  .extend({ isArchived: z.boolean().optional() });
+export const updateServiceRecordSchema = insertServiceRecordSchema.partial();
 export const updateCategorySchema = z.object({
   name: z.string().min(1).optional(),
   isArchived: z.boolean().optional(),
@@ -176,6 +256,12 @@ export type ExpenseCategory = typeof expenseCategories.$inferSelect;
 export type InsertCategory = z.infer<typeof insertCategorySchema>;
 export type Expense = typeof expenses.$inferSelect;
 export type InsertExpense = z.infer<typeof insertExpenseSchema>;
+export type MaintenanceSchedule = typeof maintenanceSchedules.$inferSelect;
+export type InsertMaintenanceSchedule = z.infer<
+  typeof insertMaintenanceScheduleSchema
+>;
+export type ServiceRecord = typeof serviceRecords.$inferSelect;
+export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
 
 // Dashboard summary payload
 export type SummaryReport = {
@@ -186,4 +272,16 @@ export type SummaryReport = {
   milesDriven: number | null;
   expenseCount: number;
   byCategory: { categoryId: string; name: string; total: number }[];
+};
+
+// Maintenance status payload (per schedule item, computed server-side)
+export type MaintenanceStatusLevel = "ok" | "due_soon" | "overdue";
+export type MaintenanceItemStatus = {
+  schedule: MaintenanceSchedule;
+  lastService: ServiceRecord | null;
+  status: MaintenanceStatusLevel;
+  dueByDate: string | null; // YYYY-MM-DD
+  dueByOdometer: number | null;
+  milesRemaining: number | null;
+  daysRemaining: number | null;
 };

@@ -1,7 +1,16 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Car, DollarSign, Gauge, Plus, TrendingUp } from "lucide-react";
+import {
+  AlertTriangle,
+  Car,
+  Clock,
+  DollarSign,
+  Gauge,
+  Plus,
+  TrendingUp,
+  Wrench,
+} from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +33,7 @@ import { formatDate, formatMiles, formatMoney } from "@/lib/format";
 import type {
   Expense,
   ExpenseCategory,
+  MaintenanceItemStatus,
   SummaryReport,
   Vehicle,
 } from "@shared/schema";
@@ -94,6 +104,17 @@ export default function Dashboard() {
     queryKey: ["/api/categories"],
     enabled: !!vehicles && vehicles.length > 0,
   });
+  const { data: maintenanceStatus } = useQuery<MaintenanceItemStatus[]>({
+    queryKey: [`/api/vehicles/${vehicleParam}/maintenance-status`],
+    enabled: !!vehicleParam,
+  });
+  const urgentMaintenance = useMemo(
+    () =>
+      (maintenanceStatus ?? [])
+        .filter((s) => s.status !== "ok")
+        .sort((a, b) => (a.status === "overdue" ? -1 : 1)),
+    [maintenanceStatus],
+  );
 
   const categoryName = useMemo(
     () => new Map((categories ?? []).map((c) => [c.id, c.name])),
@@ -209,6 +230,49 @@ export default function Dashboard() {
             hint="Latest reading"
           />
         </div>
+      )}
+
+      {vehicleParam && urgentMaintenance.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Wrench className="h-4 w-4" /> Maintenance
+            </CardTitle>
+            <Link
+              href="/maintenance"
+              className="text-sm text-primary hover:underline"
+            >
+              View all
+            </Link>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {urgentMaintenance.slice(0, 4).map((item) => (
+              <div
+                key={item.schedule.id}
+                className="flex items-center justify-between gap-3 text-sm"
+              >
+                <span className="flex items-center gap-2">
+                  {item.status === "overdue" ? (
+                    <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />
+                  ) : (
+                    <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  )}
+                  {item.schedule.name}
+                </span>
+                <Badge
+                  variant={item.status === "overdue" ? "destructive" : undefined}
+                  className={
+                    item.status === "due_soon"
+                      ? "border-transparent bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400"
+                      : undefined
+                  }
+                >
+                  {item.status === "overdue" ? "Overdue" : "Due soon"}
+                </Badge>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">

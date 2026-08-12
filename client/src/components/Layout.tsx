@@ -7,6 +7,7 @@ import {
   Plus,
   Receipt,
   Settings,
+  Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -17,6 +18,7 @@ const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/expenses", label: "Expenses", icon: Receipt },
   { href: "/vehicles", label: "Garage", icon: Car },
+  { href: "/maintenance", label: "Maintenance", icon: Wrench },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
