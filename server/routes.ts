@@ -19,6 +19,7 @@ import {
   type InsertServiceRecord,
   insertRecurringCostSchema,
   updateRecurringCostSchema,
+  insertValueEstimateSchema,
 } from "@shared/schema";
 
 const odometerBodySchema = z.object({
@@ -527,6 +528,70 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       next(e);
     }
   });
+
+  // ---- Value estimates ----
+  app.get(
+    "/api/vehicles/:id/values",
+    isAuthenticated,
+    async (req, res, next) => {
+      try {
+        const vehicle = await ownedVehicle(req, res, req.params.id);
+        if (!vehicle) return;
+        res.json(await storage.getValueEstimates(vehicle.id));
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  app.post(
+    "/api/vehicles/:id/values",
+    isAuthenticated,
+    async (req, res, next) => {
+      try {
+        const vehicle = await ownedVehicle(req, res, req.params.id);
+        if (!vehicle) return;
+        const parsed = insertValueEstimateSchema
+          .omit({ vehicleId: true })
+          .safeParse(req.body);
+        if (!parsed.success) return zodError(res, parsed.error);
+        const estimate = await storage.createValueEstimate({
+          ...parsed.data,
+          vehicleId: vehicle.id,
+        });
+        res.status(201).json(estimate);
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  app.delete("/api/values/:id", isAuthenticated, async (req, res, next) => {
+    try {
+      const estimate = await storage.getValueEstimate(req.params.id);
+      if (!estimate) return res.status(404).json({ message: "Not found" });
+      const vehicle = await ownedVehicle(req, res, estimate.vehicleId);
+      if (!vehicle) return;
+      await storage.deleteValueEstimate(estimate.id);
+      res.json({ message: "Deleted" });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.get(
+    "/api/vehicles/:id/value-curve",
+    isAuthenticated,
+    async (req, res, next) => {
+      try {
+        const vehicle = await ownedVehicle(req, res, req.params.id);
+        if (!vehicle) return;
+        res.json(await storage.getValueCurve(vehicle.id));
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
 
   // ---- Reports ----
   app.get(

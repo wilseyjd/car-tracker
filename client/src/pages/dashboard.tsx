@@ -52,6 +52,7 @@ import type {
   MaintenanceItemStatus,
   ReportGranularity,
   SummaryReport,
+  ValueCurve,
   Vehicle,
 } from "@shared/schema";
 
@@ -208,6 +209,10 @@ export default function Dashboard() {
   });
   const { data: maintenanceStatus } = useQuery<MaintenanceItemStatus[]>({
     queryKey: [`/api/vehicles/${vehicleParam}/maintenance-status`],
+    enabled: !!vehicleParam,
+  });
+  const { data: valueCurve } = useQuery<ValueCurve>({
+    queryKey: [`/api/vehicles/${vehicleParam}/value-curve`],
     enabled: !!vehicleParam,
   });
   const urgentMaintenance = useMemo(
@@ -455,6 +460,24 @@ export default function Dashboard() {
               icon={Car}
               hint="Latest reading"
             />
+            {vehicleParam && valueCurve?.currentEstimate != null && (
+              <StatCard
+                title="Vehicle Value"
+                value={formatMoney(valueCurve.currentEstimate)}
+                icon={TrendingDown}
+                hint={
+                  valueCurve.equity != null ? (
+                    <Link href="/value" className="hover:underline">
+                      {formatMoney(valueCurve.equity)} equity
+                    </Link>
+                  ) : (
+                    <Link href="/value" className="hover:underline">
+                      View value curve
+                    </Link>
+                  )
+                }
+              />
+            )}
           </div>
 
           <Card>

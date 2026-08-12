@@ -212,6 +212,30 @@ export const serviceRecords = pgTable("service_records", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Manual value checkpoints (KBB/Carvana/dealer estimates) — anchor the depreciation curve
+export const VALUE_SOURCES = [
+  "KBB",
+  "Carvana",
+  "CarMax",
+  "Dealer",
+  "Other",
+] as const;
+
+export const valueEstimates = pgTable("value_estimates", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id")
+    .references(() => vehicles.id)
+    .notNull(),
+  estimateDate: date("estimate_date").notNull(),
+  value: numeric("value", { precision: 12, scale: 2 }).notNull(),
+  source: varchar("source", { length: 20 }).notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Default categories seeded for each new user
 export const DEFAULT_CATEGORIES = [
   "Car Payment",
@@ -294,6 +318,14 @@ export const insertRecurringCostSchema = createInsertSchema(recurringCosts, {
   updatedAt: true,
 });
 
+export const insertValueEstimateSchema = createInsertSchema(valueEstimates, {
+  source: z.enum(VALUE_SOURCES),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const updateExpenseSchema = insertExpenseSchema.partial();
 export const updateVehicleSchema = insertVehicleSchema.partial();
 export const updateMaintenanceScheduleSchema = insertMaintenanceScheduleSchema
@@ -338,6 +370,24 @@ export type DashboardInsight = {
 export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 export type RecurringCost = typeof recurringCosts.$inferSelect;
 export type InsertRecurringCost = z.infer<typeof insertRecurringCostSchema>;
+
+export type ValueSource = (typeof VALUE_SOURCES)[number];
+export type ValueEstimate = typeof valueEstimates.$inferSelect;
+export type InsertValueEstimate = z.infer<typeof insertValueEstimateSchema>;
+
+// Depreciation curve payload for the /value page
+export type ValueCurvePoint = {
+  date: string; // YYYY-MM-DD
+  value: number;
+  isCheckpoint: boolean; // true for actual logged checkpoints (incl. purchase), false for the fitted curve
+};
+export type ValueCurve = {
+  points: ValueCurvePoint[];
+  currentEstimate: number | null;
+  cumulativeSpend: number;
+  remainingLoanBalance: number | null; // null when no loan data exists (hide equity UI, don't zero it)
+  equity: number | null;
+};
 
 export type ReportGranularity = "week" | "month" | "year";
 
