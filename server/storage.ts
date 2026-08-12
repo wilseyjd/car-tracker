@@ -9,6 +9,7 @@ import {
   maintenanceSchedules,
   serviceRecords,
   recurringCosts,
+  valueEstimates,
   DEFAULT_CATEGORIES,
   DEFAULT_MAINTENANCE_SCHEDULES,
   FIXED_CATEGORY_NAMES,
@@ -28,6 +29,9 @@ import {
   type RecurringCost,
   type InsertRecurringCost,
   type RecurringCadence,
+  type ValueEstimate,
+  type InsertValueEstimate,
+  type ValueCurve,
   type SummaryReport,
   type DashboardInsight,
   type ReportGranularity,
@@ -284,6 +288,13 @@ export interface IStorage {
   deleteRecurringCost(id: string): Promise<void>;
   generateRecurringInstances(userId: string): Promise<{ generated: number }>;
 
+  // Value estimates
+  getValueEstimates(vehicleId: string): Promise<ValueEstimate[]>;
+  getValueEstimate(id: string): Promise<ValueEstimate | undefined>;
+  createValueEstimate(data: InsertValueEstimate): Promise<ValueEstimate>;
+  deleteValueEstimate(id: string): Promise<void>;
+  getValueCurve(vehicleId: string): Promise<ValueCurve>;
+
   // Reports
   getSummary(
     userId: string,
@@ -416,6 +427,7 @@ class DatabaseStorage implements IStorage {
       .delete(maintenanceSchedules)
       .where(eq(maintenanceSchedules.vehicleId, id));
     await db.delete(recurringCosts).where(eq(recurringCosts.vehicleId, id));
+    await db.delete(valueEstimates).where(eq(valueEstimates.vehicleId, id));
     await db.delete(expenses).where(eq(expenses.vehicleId, id));
     await db.delete(vehicles).where(eq(vehicles.id, id));
   }
@@ -854,6 +866,144 @@ class DatabaseStorage implements IStorage {
     }
 
     return { generated };
+  }
+
+  // ---- Value estimates ----
+  async getValueEstimates(vehicleId: string) {
+    return db
+      .select()
+      .from(valueEstimates)
+      .where(eq(valueEstimates.vehicleId, vehicleId))
+      .orderBy(desc(valueEstimates.estimateDate));
+  }
+
+  async getValueEstimate(id: string) {
+    const [estimate] = await db
+      .select()
+      .from(valueEstimates)
+      .where(eq(valueEstimates.id, id));
+    return estimate;
+  }
+
+  async createValueEstimate(data: InsertValueEstimate) {
+    const [estimate] = await db.insert(valueEstimates).values(data).returning();
+    return estimate;
+  }
+
+  async deleteValueEstimate(id: string) {
+    await db.delete(valueEstimates).where(eq(valueEstimates.id, id));
+  }
+
+  async getValueCurve(vehicleId: string): Promise<ValueCurve> {
+    const vehicle = await this.getVehicle(vehicleId);
+    const checkpoints = await this.getValueEstimates(vehicleId);
+    const now = new Date();
+    const todayStr = formatDateOnly(now);
+
+    // Anchor points: purchase price/date (if known) plus every logged checkpoint, oldest first.
+    const anchors: { date: string; value: number }[] = [];
+    if (vehicle?.purchaseDate && vehicle.purchasePrice != null) {
+      anchors.push({
+        date: vehicle.purchaseDate,
+        value: parseFloat(vehicle.purchasePrice),
+      });
+    }
+    for (const c of [...checkpoints].sort((a, b) =>
+      a.estimateDate.localeCompare(b.estimateDate),
+    )) {
+      anchors.push({ date: c.estimateDate, value: parseFloat(c.value) });
+    }
+
+    let currentEstimate: number | null = null;
+    const points: ValueCurve["points"] = anchors.map((a) => ({
+      date: a.date,
+      value: a.value,
+      isCheckpoint: true,
+    }));
+
+    if (anchors.length === 0) {
+      // No purchase price and no checkpoints — nothing to plot.
+    } else if (anchors.length === 1) {
+      // Standard ~15%/yr fallback decay from the single known anchor.
+      const [anchor] = anchors;
+      const anchorDate = parseDateOnly(anchor.date);
+      const yearsElapsed = Math.max(
+        0,
+        (now.getTime() - anchorDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25),
+      );
+      currentEstimate = anchor.value * Math.pow(1 - 0.15, yearsElapsed);
+      points.push({ date: todayStr, value: currentEstimate, isCheckpoint: false });
+    } else {
+      // Fit a single exponential decay rate through the earliest and latest anchor
+      // (V_last = V_first * (1-r)^Δyears), then project it out to today.
+      const first = anchors[0];
+      const last = anchors[anchors.length - 1];
+      const firstDate = parseDateOnly(first.date);
+      const lastDate = parseDateOnly(last.date);
+      const spanYears = Math.max(
+        1 / 365.25,
+        (lastDate.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25),
+      );
+      const ratio = last.value > 0 && first.value > 0 ? last.value / first.value : 1;
+      const annualRetention = Math.pow(Math.max(ratio, 0.0001), 1 / spanYears);
+
+      const nowYears =
+        (now.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+      currentEstimate =
+        nowYears > spanYears
+          ? first.value * Math.pow(annualRetention, nowYears)
+          : last.value;
+      if (todayStr > last.date) {
+        points.push({ date: todayStr, value: currentEstimate, isCheckpoint: false });
+      }
+    }
+
+    const allExpenses = await this.getExpenses(
+      vehicle?.userId ?? "",
+      { vehicleId },
+    );
+    const cumulativeSpend = allExpenses.reduce(
+      (sum, e) => sum + parseFloat(e.amount),
+      0,
+    );
+
+    // Remaining loan balance: original amount minus principal paid down by every generated
+    // instance of any loan-bearing recurring cost on this vehicle. Null (not zero) when the
+    // vehicle has no loan data at all, so the UI can hide equity entirely rather than show $0.
+    const loanTemplates = await db
+      .select()
+      .from(recurringCosts)
+      .where(eq(recurringCosts.vehicleId, vehicleId));
+    let remainingLoanBalance: number | null = null;
+    for (const template of loanTemplates) {
+      if (template.loanOriginalAmount == null || template.principalAmount == null)
+        continue;
+      const paymentsMade = await db
+        .select()
+        .from(expenses)
+        .where(eq(expenses.recurringCostId, template.id));
+      const paid = paymentsMade.length * parseFloat(template.principalAmount);
+      const remaining = Math.max(
+        0,
+        parseFloat(template.loanOriginalAmount) - paid,
+      );
+      remainingLoanBalance = (remainingLoanBalance ?? 0) + remaining;
+    }
+
+    return {
+      points: points.sort((a, b) => a.date.localeCompare(b.date)),
+      currentEstimate:
+        currentEstimate != null ? Math.round(currentEstimate * 100) / 100 : null,
+      cumulativeSpend: Math.round(cumulativeSpend * 100) / 100,
+      remainingLoanBalance:
+        remainingLoanBalance != null
+          ? Math.round(remainingLoanBalance * 100) / 100
+          : null,
+      equity:
+        currentEstimate != null && remainingLoanBalance != null
+          ? Math.round((currentEstimate - remainingLoanBalance) * 100) / 100
+          : null,
+    };
   }
 
   // ---- Reports ----

@@ -7,6 +7,7 @@ import {
   Plus,
   Receipt,
   Settings,
+  TrendingDown,
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,7 @@ const nav = [
   { href: "/expenses", label: "Expenses", icon: Receipt },
   { href: "/vehicles", label: "Garage", icon: Car },
   { href: "/maintenance", label: "Maintenance", icon: Wrench },
+  { href: "/value", label: "Value", icon: TrendingDown },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
