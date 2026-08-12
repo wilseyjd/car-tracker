@@ -329,6 +329,8 @@ export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 export type RecurringCost = typeof recurringCosts.$inferSelect;
 export type InsertRecurringCost = z.infer<typeof insertRecurringCostSchema>;
 
+export type ReportGranularity = "week" | "month" | "year";
+
 // Dashboard summary payload
 export type SummaryReport = {
   totalSpend: number;
@@ -339,7 +341,10 @@ export type SummaryReport = {
   milesDriven: number | null;
   expenseCount: number;
   byCategory: { categoryId: string; name: string; total: number }[];
-  byMonth: { month: string; total: number }[]; // YYYY-MM, chronological
+  granularity: ReportGranularity;
+  // period format depends on granularity: YYYY-MM-DD (Monday of that week) for "week",
+  // YYYY-MM for "month", YYYY for "year". Always chronological.
+  byPeriod: { period: string; total: number }[];
   insights: DashboardInsight[];
 };
 
