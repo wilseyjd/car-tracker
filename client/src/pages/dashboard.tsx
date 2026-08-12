@@ -15,12 +15,14 @@ import {
 import {
   Bar,
   BarChart,
+  CartesianGrid,
   Cell,
   Pie,
   PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
+  YAxis,
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,7 +43,7 @@ import {
 } from "@/components/ui/select";
 import { VehicleFormDialog } from "@/components/VehicleFormDialog";
 import { QueryError } from "@/components/QueryError";
-import { CHART_COLORS } from "@/lib/chart-colors";
+import { CHART_COLORS, categoryColor } from "@/lib/chart-colors";
 import { formatDate, formatMiles, formatPeriod, formatMoney } from "@/lib/format";
 import type {
   DashboardInsight,
@@ -75,7 +77,7 @@ function StatCard({
       <CardContent className="pt-6">
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">{title}</p>
-          <Icon className="h-4 w-4 text-muted-foreground" />
+          <Icon className="h-4 w-4 text-primary" />
         </div>
         <p className="mt-1 text-2xl font-bold">{value}</p>
         {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
@@ -106,18 +108,21 @@ function InsightsStrip({ insights }: { insights: DashboardInsight[] }) {
   );
 }
 
-function MonthlyTrendHint({ summary }: { summary: SummaryReport }) {
-  if (summary.monthlySpendPrior == null || summary.monthlySpendPrior === 0) {
-    return <>Trailing 12-month average</>;
-  }
-  const delta =
-    ((summary.monthlySpend - summary.monthlySpendPrior) /
-      summary.monthlySpendPrior) *
-    100;
+function TrendHint({
+  current,
+  prior,
+  suffix,
+  fallback,
+}: {
+  current: number;
+  prior: number | null;
+  suffix: string;
+  fallback: React.ReactNode;
+}) {
+  if (prior == null || prior === 0) return <>{fallback}</>;
+  const delta = ((current - prior) / prior) * 100;
   const rounded = Math.round(delta);
-  if (Math.abs(rounded) < 1) {
-    return <>Flat vs prior 12 months</>;
-  }
+  if (Math.abs(rounded) < 1) return <>Flat {suffix}</>;
   const up = rounded > 0;
   const Icon = up ? TrendingUp : TrendingDown;
   return (
@@ -125,7 +130,7 @@ function MonthlyTrendHint({ summary }: { summary: SummaryReport }) {
       className={`inline-flex items-center gap-1 ${up ? "text-destructive" : "text-emerald-600 dark:text-emerald-400"}`}
     >
       <Icon className="h-3 w-3" />
-      {Math.abs(rounded)}% vs prior 12mo
+      {Math.abs(rounded)}% {suffix}
     </span>
   );
 }
@@ -136,6 +141,20 @@ export default function Dashboard() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [granularity, setGranularity] = useState<ReportGranularity>("month");
+  const [customRange, setCustomRange] = useState(false);
+  // Defaults to variable-only: fixed costs (loan/insurance/registration) are static and
+  // otherwise visually dominate the chart, burying the operational categories that actually
+  // move month to month and indicate vehicle health trends.
+  const [categoryCostFilter, setCategoryCostFilter] = useState<
+    "all" | "fixed" | "variable"
+  >("variable");
+
+  function selectPreset(g: ReportGranularity) {
+    setGranularity(g);
+    setCustomRange(false);
+    setFrom("");
+    setTo("");
+  }
 
   const {
     data: vehicles,
@@ -221,6 +240,12 @@ export default function Dashboard() {
     [summary, granularity],
   );
 
+  const categoryFiltered = useMemo(() => {
+    const all = summary?.byCategory ?? [];
+    if (categoryCostFilter === "all") return all;
+    return all.filter((c) => c.costType === categoryCostFilter);
+  }, [summary, categoryCostFilter]);
+
   if (vehiclesLoading) {
     return (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -292,35 +317,61 @@ export default function Dashboard() {
 
       {summary && <InsightsStrip insights={summary.insights} />}
 
+      {/* Single time control: presets set both the trend granularity and the range; Custom
+          reveals date inputs instead of stacking a second, seemingly-unrelated control. */}
       <div className="flex flex-wrap items-end gap-3">
-        <div className="flex items-center gap-2">
-          <Input
-            type="date"
-            className="w-36"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            aria-label="From date"
-          />
-          <span className="text-muted-foreground text-sm">to</span>
-          <Input
-            type="date"
-            className="w-36"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            aria-label="To date"
-          />
-        </div>
-        {(from || to) && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setFrom("");
-              setTo("");
-            }}
+        <div className="flex items-center rounded-md border p-0.5">
+          {GRANULARITIES.map((g) => (
+            <button
+              key={g.value}
+              type="button"
+              onClick={() => selectPreset(g.value)}
+              className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                !customRange && granularity === g.value
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {g.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setCustomRange(true)}
+            className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+              customRange
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
           >
-            Clear
-          </Button>
+            Custom
+          </button>
+        </div>
+        {customRange && (
+          <>
+            <div className="flex items-center gap-2">
+              <Input
+                type="date"
+                className="w-36"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                aria-label="From date"
+              />
+              <span className="text-muted-foreground text-sm">to</span>
+              <Input
+                type="date"
+                className="w-36"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                aria-label="To date"
+              />
+            </div>
+            {(from || to) && (
+              <Button variant="ghost" size="sm" onClick={() => selectPreset("month")}>
+                Clear
+              </Button>
+            )}
+          </>
         )}
       </div>
 
@@ -350,9 +401,24 @@ export default function Dashboard() {
             />
             <StatCard
               title="Cost / Month"
-              value={formatMoney(summary.monthlySpend)}
+              value={
+                summary.monthlySpendReliable
+                  ? formatMoney(summary.monthlySpend)
+                  : "Not enough data yet"
+              }
               icon={TrendingUp}
-              hint={<MonthlyTrendHint summary={summary} />}
+              hint={
+                summary.monthlySpendReliable ? (
+                  <TrendHint
+                    current={summary.monthlySpend}
+                    prior={summary.monthlySpendPrior}
+                    suffix="vs prior 12mo"
+                    fallback="Trailing 12-month average"
+                  />
+                ) : (
+                  "Need 45+ days of history to average"
+                )
+              }
             />
             <StatCard
               title="Cost / Mile"
@@ -363,13 +429,20 @@ export default function Dashboard() {
               }
               icon={Gauge}
               hint={
-                summary.costPerMile != null
-                  ? `${formatMiles(summary.milesDriven)} driven`
-                  : multiVehicleAllSelected
-                    ? "Select a single vehicle to see cost/mile"
-                    : summary.milesDriven === 0
-                      ? "No miles driven yet"
-                      : "Log odometer readings"
+                summary.costPerMile != null ? (
+                  <TrendHint
+                    current={summary.costPerMile}
+                    prior={summary.costPerMilePrior}
+                    suffix="vs a year ago"
+                    fallback={`${formatMiles(summary.milesDriven)} driven`}
+                  />
+                ) : multiVehicleAllSelected ? (
+                  "Select a single vehicle to see cost/mile"
+                ) : summary.milesDriven === 0 ? (
+                  "No miles driven yet"
+                ) : (
+                  "Log odometer readings"
+                )
               }
             />
             <StatCard
@@ -385,36 +458,30 @@ export default function Dashboard() {
           </div>
 
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
+            <CardHeader>
               <CardTitle className="text-base">Spend Over Time</CardTitle>
-              <div className="flex items-center rounded-md border p-0.5">
-                {GRANULARITIES.map((g) => (
-                  <button
-                    key={g.value}
-                    type="button"
-                    onClick={() => setGranularity(g.value)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
-                      granularity === g.value
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {g.label}
-                  </button>
-                ))}
-              </div>
             </CardHeader>
             <CardContent>
               {trendData.length > 0 ? (
                 <div className="h-56 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={trendData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis
                         dataKey="period"
                         tickLine={false}
                         axisLine={false}
                         fontSize={12}
                         stroke="hsl(var(--muted-foreground))"
+                      />
+                      <YAxis
+                        domain={[0, "auto"]}
+                        tickLine={false}
+                        axisLine={false}
+                        fontSize={12}
+                        width={56}
+                        stroke="hsl(var(--muted-foreground))"
+                        tickFormatter={(value) => formatMoney(value as number)}
                       />
                       <Tooltip
                         formatter={(value) => formatMoney(value as number)}
@@ -483,27 +550,49 @@ export default function Dashboard() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
             <CardTitle className="text-base">Spend by Category</CardTitle>
+            <div className="flex items-center rounded-md border p-0.5">
+              {(
+                [
+                  { value: "variable", label: "Variable" },
+                  { value: "fixed", label: "Fixed" },
+                  { value: "all", label: "All" },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.value}
+                  type="button"
+                  onClick={() => setCategoryCostFilter(f.value)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                    categoryCostFilter === f.value
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </CardHeader>
           <CardContent>
-            {summary && summary.byCategory.length > 0 ? (
+            {categoryFiltered.length > 0 ? (
               <div className="flex flex-col sm:flex-row items-center gap-4">
                 <div className="h-52 w-52 shrink-0">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
-                        data={summary.byCategory}
+                        data={categoryFiltered}
                         dataKey="total"
                         nameKey="name"
                         innerRadius={55}
                         outerRadius={90}
                         paddingAngle={2}
                       >
-                        {summary.byCategory.map((_, i) => (
+                        {categoryFiltered.map((c) => (
                           <Cell
-                            key={i}
-                            fill={CHART_COLORS[i % CHART_COLORS.length]}
+                            key={c.categoryId}
+                            fill={categoryColor(c.categoryId)}
                           />
                         ))}
                       </Pie>
@@ -514,7 +603,7 @@ export default function Dashboard() {
                   </ResponsiveContainer>
                 </div>
                 <div className="flex-1 w-full space-y-2">
-                  {summary.byCategory.slice(0, 6).map((c, i) => (
+                  {categoryFiltered.slice(0, 6).map((c) => (
                     <div
                       key={c.categoryId}
                       className="flex items-center justify-between text-sm"
@@ -522,10 +611,7 @@ export default function Dashboard() {
                       <span className="flex items-center gap-2">
                         <span
                           className="h-2.5 w-2.5 rounded-full"
-                          style={{
-                            backgroundColor:
-                              CHART_COLORS[i % CHART_COLORS.length],
-                          }}
+                          style={{ backgroundColor: categoryColor(c.categoryId) }}
                         />
                         {c.name}
                       </span>
@@ -538,7 +624,9 @@ export default function Dashboard() {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground py-12 text-center">
-                No expenses yet — add your first one to see the breakdown.
+                {categoryCostFilter === "all"
+                  ? "No expenses yet — add your first one to see the breakdown."
+                  : `No ${categoryCostFilter} expenses in this range.`}
               </p>
             )}
           </CardContent>
@@ -565,27 +653,33 @@ export default function Dashboard() {
               />
             ) : recentExpenses.length > 0 ? (
               <div className="space-y-3">
+                {/* Category is identified by the same dot color as the Spend by Category
+                    panel rather than a repeated text badge — that panel already owns the
+                    category breakdown, so this list stays focused on the "what/when." */}
                 {recentExpenses.map((e) => (
                   <div
                     key={e.id}
                     className="flex items-center justify-between gap-3"
                   >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">
-                        {e.vendor || categoryName.get(e.categoryId) || "—"}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatDate(e.expenseDate)}
-                      </p>
+                    <div className="min-w-0 flex items-center gap-2">
+                      <span
+                        className="h-2 w-2 rounded-full shrink-0"
+                        style={{ backgroundColor: categoryColor(e.categoryId) }}
+                        title={categoryName.get(e.categoryId)}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {e.vendor || categoryName.get(e.categoryId) || "—"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatDate(e.expenseDate)}
+                          {e.vendor && ` · ${categoryName.get(e.categoryId) ?? ""}`}
+                        </p>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Badge variant="secondary">
-                        {categoryName.get(e.categoryId)}
-                      </Badge>
-                      <span className="text-sm font-semibold">
-                        {formatMoney(e.amount)}
-                      </span>
-                    </div>
+                    <span className="text-sm font-semibold shrink-0">
+                      {formatMoney(e.amount)}
+                    </span>
                   </div>
                 ))}
               </div>

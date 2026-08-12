@@ -11,6 +11,7 @@ import {
   recurringCosts,
   DEFAULT_CATEGORIES,
   DEFAULT_MAINTENANCE_SCHEDULES,
+  FIXED_CATEGORY_NAMES,
   type User,
   type Vehicle,
   type InsertVehicle,
@@ -971,23 +972,57 @@ class DatabaseStorage implements IStorage {
     let currentOdometer: number | null = null;
     let milesDriven: number | null = null;
     let costPerMile: number | null = null;
+    let costPerMilePrior: number | null = null;
     if (scoped.length === 1) {
       const vehicle = scoped[0];
       currentOdometer = await this.getCurrentOdometer(vehicle.id);
+      const baseline = vehicle.purchaseOdometer ?? 0;
+      const lifetimeTotal = fullHistory.reduce(
+        (sum, e) => sum + parseFloat(e.amount),
+        0,
+      );
       if (currentOdometer != null) {
-        const baseline = vehicle.purchaseOdometer ?? 0;
         milesDriven = Math.max(0, currentOdometer - baseline);
-        if (milesDriven > 0) {
-          const lifetimeTotal = fullHistory.reduce(
-            (sum, e) => sum + parseFloat(e.amount),
-            0,
-          );
-          costPerMile = lifetimeTotal / milesDriven;
+        if (milesDriven > 0) costPerMile = lifetimeTotal / milesDriven;
+      }
+
+      // Same figure as of a year ago: spend and odometer reading as they stood then, so the
+      // Cost/Mile stat can show a trend instead of a bare, unexplained number.
+      const yearAgoStr = formatDateOnly(yearAgo);
+      const priorLogs = await this.getOdometerLogs(vehicle.id);
+      const priorOdometer = priorLogs.find(
+        (l) => l.readingDate < yearAgoStr,
+      )?.reading;
+      if (priorOdometer != null) {
+        const priorMiles = Math.max(0, priorOdometer - baseline);
+        if (priorMiles > 0) {
+          const priorTotal = fullHistory
+            .filter((e) => e.expenseDate < yearAgoStr)
+            .reduce((sum, e) => sum + parseFloat(e.amount), 0);
+          costPerMilePrior = priorTotal / priorMiles;
         }
       }
     }
 
+    // Cost/Month is a trailing-average that reads identically to Total Spend (and is
+    // essentially meaningless as an "average") until enough history exists to average over.
+    const earliestExpenseDate = fullHistory.reduce(
+      (min: string | null, e) =>
+        min === null || e.expenseDate < min ? e.expenseDate : min,
+      null as string | null,
+    );
+    const historyDays = earliestExpenseDate
+      ? (now.getTime() - parseDateOnly(earliestExpenseDate).getTime()) /
+        (1000 * 60 * 60 * 24)
+      : 0;
+    const monthlySpendReliable = historyDays >= 45;
+
     const categoryName = new Map(categories.map((c) => [c.id, c.name]));
+    const fixedCategoryIds = new Set(
+      categories
+        .filter((c) => (FIXED_CATEGORY_NAMES as readonly string[]).includes(c.name))
+        .map((c) => c.id),
+    );
     const byCategoryMap = new Map<string, number>();
     for (const e of rangedExpenses) {
       byCategoryMap.set(
@@ -1005,10 +1040,47 @@ class DatabaseStorage implements IStorage {
         categoryId,
         name: categoryName.get(categoryId) ?? "Unknown",
         total: Math.round(total * 100) / 100,
+        costType: fixedCategoryIds.has(categoryId)
+          ? ("fixed" as const)
+          : ("variable" as const),
       }))
       .sort((a, b) => b.total - a.total);
-    const byPeriod = Array.from(byPeriodMap.entries())
-      .map(([period, total]) => ({ period, total: Math.round(total * 100) / 100 }))
+
+    // Zero-fill every period in the default window (even when no expenses fall in it) so the
+    // trend chart always shows the full window's worth of bars for context, rather than only
+    // as many bars as happen to have data — otherwise 2 months of history renders as 2 bars
+    // indistinguishable from "only 2 months of data ever existed."
+    const periodKeysInWindow: string[] = [];
+    if (!from && !to && granularity !== "year") {
+      const windowStart =
+        granularity === "week"
+          ? (() => {
+              const d = new Date(now);
+              d.setDate(d.getDate() - 7 * 12);
+              return d;
+            })()
+          : yearAgo;
+      const step = granularity === "week" ? 7 : null;
+      const cursor = new Date(windowStart);
+      while (cursor <= now) {
+        periodKeysInWindow.push(
+          this.periodKey(formatDateOnly(cursor), granularity),
+        );
+        if (step) cursor.setDate(cursor.getDate() + step);
+        else cursor.setMonth(cursor.getMonth() + 1);
+      }
+    } else {
+      periodKeysInWindow.push(...byPeriodMap.keys());
+    }
+    const allPeriodKeys = new Set([
+      ...periodKeysInWindow,
+      ...byPeriodMap.keys(),
+    ]);
+    const byPeriod = Array.from(allPeriodKeys)
+      .map((period) => ({
+        period,
+        total: Math.round((byPeriodMap.get(period) ?? 0) * 100) / 100,
+      }))
       .sort((a, b) => a.period.localeCompare(b.period));
 
     const insights = computeDashboardInsights(fullHistory, categoryName);
@@ -1020,8 +1092,13 @@ class DatabaseStorage implements IStorage {
         monthlySpendPrior != null
           ? Math.round(monthlySpendPrior * 100) / 100
           : null,
+      monthlySpendReliable,
       costPerMile:
         costPerMile != null ? Math.round(costPerMile * 100) / 100 : null,
+      costPerMilePrior:
+        costPerMilePrior != null
+          ? Math.round(costPerMilePrior * 100) / 100
+          : null,
       currentOdometer,
       milesDriven,
       expenseCount: rangedExpenses.length,

@@ -226,6 +226,16 @@ export const DEFAULT_CATEGORIES = [
   "Other",
 ] as const;
 
+// Categories treated as fixed/recurring cost of ownership (loan, insurance, government fees)
+// vs. everything else, which is variable/operational spend (fuel, maintenance, repairs, etc).
+// Used to split the dashboard category breakdown so a big fixed cost doesn't visually bury
+// the variable trends that actually indicate vehicle health.
+export const FIXED_CATEGORY_NAMES = [
+  "Car Payment",
+  "Insurance",
+  "Registration/Taxes/Fees",
+] as const;
+
 // Insert schemas (Zod)
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
@@ -336,14 +346,24 @@ export type SummaryReport = {
   totalSpend: number;
   monthlySpend: number; // trailing 12 months average (or since first expense if newer)
   monthlySpendPrior: number | null; // same average for the 12 months before that, for comparison
+  // false when the expense history is too short (< 45 days) for monthlySpend to be a
+  // meaningful average rather than just restating totalSpend under a different label.
+  monthlySpendReliable: boolean;
   costPerMile: number | null;
+  costPerMilePrior: number | null; // same lifetime-average-style figure computed as of the prior period, for trend
   currentOdometer: number | null;
   milesDriven: number | null;
   expenseCount: number;
-  byCategory: { categoryId: string; name: string; total: number }[];
+  byCategory: {
+    categoryId: string;
+    name: string;
+    total: number;
+    costType: "fixed" | "variable";
+  }[];
   granularity: ReportGranularity;
   // period format depends on granularity: YYYY-MM-DD (Monday of that week) for "week",
-  // YYYY-MM for "month", YYYY for "year". Always chronological.
+  // YYYY-MM for "month", YYYY for "year". Always chronological. Zero-filled across the full
+  // default window (even periods with no spend) so the chart always shows consistent context.
   byPeriod: { period: string; total: number }[];
   insights: DashboardInsight[];
 };
