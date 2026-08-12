@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Pencil, Trash2 } from "lucide-react";
+import { Gauge, Pencil, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,8 +20,104 @@ import {
 } from "@/components/ExpenseFormDialog";
 import { QueryError } from "@/components/QueryError";
 import { apiRequest } from "@/lib/queryClient";
+import { categoryColor } from "@/lib/chart-colors";
 import { formatDate, formatMiles, formatMonth, formatMoney } from "@/lib/format";
 import type { Expense, ExpenseCategory, Vehicle } from "@shared/schema";
+
+type SortOption = "date-desc" | "date-asc" | "amount-desc" | "amount-asc";
+
+function ExpenseRow({
+  expense: e,
+  categoryName,
+  showDate,
+  onEdit,
+  onDelete,
+}: {
+  expense: Expense;
+  categoryName: Map<string, string>;
+  showDate: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const color = categoryColor(e.categoryId);
+  return (
+    <Card>
+      <CardContent className="py-2.5 px-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {/* Merchant is the primary "what did I buy" text; category is secondary metadata. */}
+            <p className="text-sm font-semibold truncate">
+              {e.vendor || categoryName.get(e.categoryId) || "—"}
+            </p>
+            <div className="flex items-center gap-2 flex-wrap mt-0.5">
+              {showDate && (
+                <span className="text-xs text-muted-foreground">
+                  {formatDate(e.expenseDate)}
+                </span>
+              )}
+              <Badge
+                variant="outline"
+                className="text-[10px] px-1.5 py-0 h-4 font-medium"
+                style={{
+                  color,
+                  borderColor: color,
+                  backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
+                }}
+              >
+                {categoryName.get(e.categoryId) ?? "—"}
+              </Badge>
+              {e.odometer != null && (
+                <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                  <Gauge className="h-3 w-3" />
+                  Odometer: {formatMiles(e.odometer)}
+                </span>
+              )}
+            </div>
+            {e.notes && (
+              <p className="text-xs text-muted-foreground truncate mt-0.5">
+                {e.notes}
+              </p>
+            )}
+            {e.gallons && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {parseFloat(e.gallons).toFixed(2)} gal
+                {e.pricePerGallon
+                  ? ` @ $${parseFloat(e.pricePerGallon).toFixed(3)}/gal`
+                  : ""}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-sm font-semibold mr-1">
+              {formatMoney(e.amount)}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11"
+              onClick={onEdit}
+              title="Edit"
+              aria-label="Edit expense"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <div className="w-px h-5 bg-border" />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              title="Delete"
+              aria-label="Delete expense"
+              onClick={onDelete}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Expenses() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -30,6 +126,8 @@ export default function Expenses() {
   const [vehicleFilter, setVehicleFilter] = useState("all");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<SortOption>("date-desc");
 
   const {
     data: expenses,
@@ -67,28 +165,61 @@ export default function Expenses() {
       list = list.filter((e) => e.categoryId === categoryFilter);
     if (from) list = list.filter((e) => e.expenseDate >= from);
     if (to) list = list.filter((e) => e.expenseDate <= to);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((e) => {
+        const cat = categoryName.get(e.categoryId) ?? "";
+        return (
+          e.vendor?.toLowerCase().includes(q) ||
+          e.notes?.toLowerCase().includes(q) ||
+          cat.toLowerCase().includes(q)
+        );
+      });
+    }
     return list;
-  }, [expenses, vehicleFilter, categoryFilter, from, to]);
+  }, [expenses, vehicleFilter, categoryFilter, from, to, search, categoryName]);
 
   const filteredTotal = useMemo(
     () => filtered.reduce((sum, e) => sum + parseFloat(e.amount), 0),
     [filtered],
   );
 
-  // filtered is already ordered newest-first by the API, so grouping by month here
-  // preserves that order across groups without a separate sort.
+  const sorted = useMemo(() => {
+    if (sortBy === "date-desc") return filtered;
+    const list = [...filtered];
+    list.sort((a, b) => {
+      if (sortBy === "date-asc") return a.expenseDate.localeCompare(b.expenseDate);
+      const amountDiff = parseFloat(a.amount) - parseFloat(b.amount);
+      return sortBy === "amount-asc" ? amountDiff : -amountDiff;
+    });
+    return list;
+  }, [filtered, sortBy]);
+
+  // Grouped by month, then by day within the month, so a run of same-day expenses shares one
+  // date header instead of each row repeating it. Only meaningful in the default date-desc
+  // order — any other sort renders as a flat list instead (see below).
   const groupedByMonth = useMemo(() => {
-    const groups = new Map<string, Expense[]>();
+    const monthGroups = new Map<string, Expense[]>();
     for (const e of filtered) {
       const key = e.expenseDate.slice(0, 7); // YYYY-MM
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(e);
+      if (!monthGroups.has(key)) monthGroups.set(key, []);
+      monthGroups.get(key)!.push(e);
     }
-    return Array.from(groups.entries()).map(([month, items]) => ({
-      month,
-      items,
-      total: items.reduce((sum, e) => sum + parseFloat(e.amount), 0),
-    }));
+    return Array.from(monthGroups.entries()).map(([month, items]) => {
+      const dayGroups = new Map<string, Expense[]>();
+      for (const e of items) {
+        if (!dayGroups.has(e.expenseDate)) dayGroups.set(e.expenseDate, []);
+        dayGroups.get(e.expenseDate)!.push(e);
+      }
+      return {
+        month,
+        total: items.reduce((sum, e) => sum + parseFloat(e.amount), 0),
+        days: Array.from(dayGroups.entries()).map(([date, dayItems]) => ({
+          date,
+          items: dayItems,
+        })),
+      };
+    });
   }, [filtered]);
 
   const deleteMutation = useMutation({
@@ -105,6 +236,13 @@ export default function Expenses() {
     setDialogOpen(true);
   }
 
+  function confirmDelete(expense: Expense) {
+    const label = expense.vendor || categoryName.get(expense.categoryId) || "this expense";
+    if (confirm(`Delete "${label}" (${formatMoney(expense.amount)})? This can't be undone.`)) {
+      deleteMutation.mutate(expense.id);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -116,6 +254,16 @@ export default function Expenses() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            className="w-48 pl-8"
+            placeholder="Search expenses..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search expenses"
+          />
+        </div>
         {vehicles.length > 1 && (
           <Select value={vehicleFilter} onValueChange={setVehicleFilter}>
             <SelectTrigger className="w-44">
@@ -161,7 +309,23 @@ export default function Expenses() {
             aria-label="To date"
           />
         </div>
-        {(from || to || categoryFilter !== "all" || vehicleFilter !== "all") && (
+        <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
+          <SelectTrigger className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="date-desc">Newest first</SelectItem>
+            <SelectItem value="date-asc">Oldest first</SelectItem>
+            <SelectItem value="amount-desc">Amount: high to low</SelectItem>
+            <SelectItem value="amount-asc">Amount: low to high</SelectItem>
+          </SelectContent>
+        </Select>
+        {(from ||
+          to ||
+          categoryFilter !== "all" ||
+          vehicleFilter !== "all" ||
+          search ||
+          sortBy !== "date-desc") && (
           <Button
             variant="ghost"
             size="sm"
@@ -170,6 +334,8 @@ export default function Expenses() {
               setTo("");
               setCategoryFilter("all");
               setVehicleFilter("all");
+              setSearch("");
+              setSortBy("date-desc");
             }}
           >
             Clear
@@ -203,7 +369,7 @@ export default function Expenses() {
             No expenses found. Add one to start tracking.
           </CardContent>
         </Card>
-      ) : (
+      ) : sortBy === "date-desc" ? (
         <div className="space-y-5">
           {groupedByMonth.map((group) => (
             <div key={group.month}>
@@ -215,72 +381,41 @@ export default function Expenses() {
                   {formatMoney(group.total)}
                 </span>
               </div>
-              <div className="space-y-2">
-                {group.items.map((e) => (
-                  <Card key={e.id}>
-                    <CardContent className="py-3 px-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-sm font-medium">
-                              {formatDate(e.expenseDate)}
-                            </span>
-                            <Badge variant="secondary">
-                              {categoryName.get(e.categoryId) ?? "—"}
-                            </Badge>
-                            {e.odometer != null && (
-                              <span className="text-xs text-muted-foreground">
-                                {formatMiles(e.odometer)}
-                              </span>
-                            )}
-                          </div>
-                          {(e.vendor || e.notes) && (
-                            <p className="text-xs text-muted-foreground truncate mt-0.5">
-                              {[e.vendor, e.notes].filter(Boolean).join(" — ")}
-                            </p>
-                          )}
-                          {e.gallons && (
-                            <p className="text-xs text-muted-foreground mt-0.5">
-                              {parseFloat(e.gallons).toFixed(2)} gal
-                              {e.pricePerGallon
-                                ? ` @ $${parseFloat(e.pricePerGallon).toFixed(3)}/gal`
-                                : ""}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span className="text-sm font-semibold mr-2">
-                            {formatMoney(e.amount)}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => openEdit(e)}
-                            title="Edit"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-destructive"
-                            title="Delete"
-                            onClick={() => {
-                              if (confirm("Delete this expense?")) {
-                                deleteMutation.mutate(e.id);
-                              }
-                            }}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+              <div className="space-y-3">
+                {group.days.map((day) => (
+                  <div key={day.date}>
+                    <p className="text-xs text-muted-foreground px-1 pb-1">
+                      {formatDate(day.date)}
+                    </p>
+                    <div className="space-y-1.5">
+                      {day.items.map((e) => (
+                        <ExpenseRow
+                          key={e.id}
+                          expense={e}
+                          categoryName={categoryName}
+                          showDate={false}
+                          onEdit={() => openEdit(e)}
+                          onDelete={() => confirmDelete(e)}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {sorted.map((e) => (
+            <ExpenseRow
+              key={e.id}
+              expense={e}
+              categoryName={categoryName}
+              showDate
+              onEdit={() => openEdit(e)}
+              onDelete={() => confirmDelete(e)}
+            />
           ))}
         </div>
       )}
