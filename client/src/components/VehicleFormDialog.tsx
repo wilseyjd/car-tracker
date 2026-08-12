@@ -1,6 +1,3 @@
-import { useEffect, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useEntityForm } from "@/hooks/use-entity-form";
 import type { Vehicle } from "@shared/schema";
 
 interface Props {
@@ -19,77 +17,90 @@ interface Props {
   vehicle?: Vehicle | null;
 }
 
+interface VehicleFormValues {
+  year: string;
+  make: string;
+  model: string;
+  trim: string;
+  nickname: string;
+  vin: string;
+  licensePlate: string;
+  purchaseDate: string;
+  purchasePrice: string;
+  purchaseOdometer: string;
+}
+
 export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
-  const [year, setYear] = useState("");
-  const [make, setMake] = useState("");
-  const [model, setModel] = useState("");
-  const [trim, setTrim] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [vin, setVin] = useState("");
-  const [licensePlate, setLicensePlate] = useState("");
-  const [purchaseDate, setPurchaseDate] = useState("");
-  const [purchasePrice, setPurchasePrice] = useState("");
-  const [purchaseOdometer, setPurchaseOdometer] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    setYear(vehicle ? String(vehicle.year) : "");
-    setMake(vehicle?.make ?? "");
-    setModel(vehicle?.model ?? "");
-    setTrim(vehicle?.trim ?? "");
-    setNickname(vehicle?.nickname ?? "");
-    setVin(vehicle?.vin ?? "");
-    setLicensePlate(vehicle?.licensePlate ?? "");
-    setPurchaseDate(vehicle?.purchaseDate ?? "");
-    setPurchasePrice(vehicle?.purchasePrice ?? "");
-    setPurchaseOdometer(
-      vehicle?.purchaseOdometer != null ? String(vehicle.purchaseOdometer) : "",
-    );
-  }, [open, vehicle]);
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, unknown> = {
-        year: parseInt(year, 10),
-        make,
-        model,
-        trim: trim || null,
-        nickname: nickname || null,
-        vin: vin || null,
-        licensePlate: licensePlate || null,
-        purchaseDate: purchaseDate || null,
-        purchasePrice: purchasePrice || null,
-        purchaseOdometer: purchaseOdometer
-          ? parseInt(purchaseOdometer, 10)
-          : null,
-      };
-      if (vehicle) {
-        await apiRequest("PATCH", `/api/vehicles/${vehicle.id}`, payload);
-      } else {
-        await apiRequest("POST", "/api/vehicles", payload);
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        predicate: (q) =>
-          typeof q.queryKey[0] === "string" &&
-          (q.queryKey[0].startsWith("/api/vehicles") ||
-            q.queryKey[0].startsWith("/api/reports/summary")),
-      });
-      toast.success(vehicle ? "Vehicle updated" : "Vehicle added");
-      onOpenChange(false);
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const y = parseInt(year, 10);
-    if (!y || y < 1900 || y > 2100) return toast.error("Enter a valid year");
-    if (!make.trim()) return toast.error("Make is required");
-    if (!model.trim()) return toast.error("Model is required");
-    mutation.mutate();
-  }
+  const { values, setValue, isPending, handleSubmit } =
+    useEntityForm<VehicleFormValues>({
+      open,
+      getInitialValues: () => ({
+        year: vehicle ? String(vehicle.year) : "",
+        make: vehicle?.make ?? "",
+        model: vehicle?.model ?? "",
+        trim: vehicle?.trim ?? "",
+        nickname: vehicle?.nickname ?? "",
+        vin: vehicle?.vin ?? "",
+        licensePlate: vehicle?.licensePlate ?? "",
+        purchaseDate: vehicle?.purchaseDate ?? "",
+        purchasePrice: vehicle?.purchasePrice ?? "",
+        purchaseOdometer:
+          vehicle?.purchaseOdometer != null
+            ? String(vehicle.purchaseOdometer)
+            : "",
+      }),
+      resetDeps: [vehicle],
+      validate: (v) => {
+        const y = parseInt(v.year, 10);
+        if (!y || y < 1900 || y > 2100) return "Enter a valid year";
+        if (!v.make.trim()) return "Make is required";
+        if (!v.model.trim()) return "Model is required";
+        return null;
+      },
+      submit: async (v) => {
+        const payload: Record<string, unknown> = {
+          year: parseInt(v.year, 10),
+          make: v.make,
+          model: v.model,
+          trim: v.trim || null,
+          nickname: v.nickname || null,
+          vin: v.vin || null,
+          licensePlate: v.licensePlate || null,
+          purchaseDate: v.purchaseDate || null,
+          purchasePrice: v.purchasePrice || null,
+          purchaseOdometer: v.purchaseOdometer
+            ? parseInt(v.purchaseOdometer, 10)
+            : null,
+        };
+        if (vehicle) {
+          await apiRequest("PATCH", `/api/vehicles/${vehicle.id}`, payload);
+        } else {
+          await apiRequest("POST", "/api/vehicles", payload);
+        }
+      },
+      onSuccess: () => {
+        queryClient.invalidateQueries({
+          predicate: (q) =>
+            typeof q.queryKey[0] === "string" &&
+            (q.queryKey[0].startsWith("/api/vehicles") ||
+              q.queryKey[0].startsWith("/api/reports/summary")),
+        });
+        onOpenChange(false);
+      },
+      successMessage: vehicle ? "Vehicle updated" : "Vehicle added",
+    });
+  const {
+    year,
+    make,
+    model,
+    trim,
+    nickname,
+    vin,
+    licensePlate,
+    purchaseDate,
+    purchasePrice,
+    purchaseOdometer,
+  } = values;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -106,7 +117,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 type="number"
                 placeholder="2026"
                 value={year}
-                onChange={(e) => setYear(e.target.value)}
+                onChange={(e) => setValue("year", e.target.value)}
                 required
               />
             </div>
@@ -116,7 +127,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 id="make"
                 placeholder="Toyota"
                 value={make}
-                onChange={(e) => setMake(e.target.value)}
+                onChange={(e) => setValue("make", e.target.value)}
                 required
               />
             </div>
@@ -129,7 +140,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 id="model"
                 placeholder="RAV4"
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={(e) => setValue("model", e.target.value)}
                 required
               />
             </div>
@@ -139,7 +150,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 id="trim"
                 placeholder="Optional"
                 value={trim}
-                onChange={(e) => setTrim(e.target.value)}
+                onChange={(e) => setValue("trim", e.target.value)}
               />
             </div>
           </div>
@@ -150,7 +161,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
               id="nickname"
               placeholder="Optional — shown around the app"
               value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
+              onChange={(e) => setValue("nickname", e.target.value)}
             />
           </div>
 
@@ -162,7 +173,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 placeholder="Optional"
                 maxLength={17}
                 value={vin}
-                onChange={(e) => setVin(e.target.value.toUpperCase())}
+                onChange={(e) => setValue("vin", e.target.value.toUpperCase())}
               />
             </div>
             <div className="space-y-1.5">
@@ -171,7 +182,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 id="plate"
                 placeholder="Optional"
                 value={licensePlate}
-                onChange={(e) => setLicensePlate(e.target.value)}
+                onChange={(e) => setValue("licensePlate", e.target.value)}
               />
             </div>
           </div>
@@ -183,7 +194,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 id="purchaseDate"
                 type="date"
                 value={purchaseDate}
-                onChange={(e) => setPurchaseDate(e.target.value)}
+                onChange={(e) => setValue("purchaseDate", e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
@@ -195,7 +206,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 min="0"
                 placeholder="Optional"
                 value={purchasePrice}
-                onChange={(e) => setPurchasePrice(e.target.value)}
+                onChange={(e) => setValue("purchasePrice", e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
@@ -206,7 +217,7 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
                 min="0"
                 placeholder="Optional"
                 value={purchaseOdometer}
-                onChange={(e) => setPurchaseOdometer(e.target.value)}
+                onChange={(e) => setValue("purchaseOdometer", e.target.value)}
               />
             </div>
           </div>
@@ -219,12 +230,8 @@ export function VehicleFormDialog({ open, onOpenChange, vehicle }: Props) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending
-                ? "Saving..."
-                : vehicle
-                  ? "Save Changes"
-                  : "Add Vehicle"}
+            <Button type="submit" disabled={isPending}>
+              {isPending ? "Saving..." : vehicle ? "Save Changes" : "Add Vehicle"}
             </Button>
           </div>
         </form>

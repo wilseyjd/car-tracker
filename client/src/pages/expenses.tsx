@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { QueryState } from "@/components/QueryState";
 import {
   ExpenseFormDialog,
   invalidateExpenseData,
@@ -30,7 +31,12 @@ export default function Expenses() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
-  const { data: expenses, isLoading } = useQuery<Expense[]>({
+  const {
+    data: expenses,
+    isLoading,
+    isError,
+    error,
+  } = useQuery<Expense[]>({
     queryKey: ["/api/expenses"],
   });
   const { data: categories = [] } = useQuery<ExpenseCategory[]>({
@@ -158,85 +164,94 @@ export default function Expenses() {
       </div>
 
       {/* List */}
-      {isLoading ? (
-        <div className="space-y-2">
-          {[...Array(5)].map((_, i) => (
-            <Skeleton key={i} className="h-16" />
-          ))}
-        </div>
-      ) : filtered.length === 0 ? (
-        <Card>
-          <CardContent className="py-16 text-center text-sm text-muted-foreground">
-            No expenses found. Add one to start tracking.
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-2">
-          {filtered.map((e) => (
-            <Card key={e.id}>
-              <CardContent className="py-3 px-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium">
-                        {formatDate(e.expenseDate)}
-                      </span>
-                      <Badge variant="secondary">
-                        {categoryName.get(e.categoryId) ?? "—"}
-                      </Badge>
-                      {e.odometer != null && (
-                        <span className="text-xs text-muted-foreground">
-                          {formatMiles(e.odometer)}
+      <QueryState
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        data={filtered}
+        skeleton={
+          <div className="space-y-2">
+            {[...Array(5)].map((_, i) => (
+              <Skeleton key={i} className="h-16" />
+            ))}
+          </div>
+        }
+        empty={
+          <Card>
+            <CardContent className="py-16 text-center text-sm text-muted-foreground">
+              No expenses found. Add one to start tracking.
+            </CardContent>
+          </Card>
+        }
+      >
+        {(filtered) => (
+          <div className="space-y-2">
+            {filtered.map((e) => (
+              <Card key={e.id}>
+                <CardContent className="py-3 px-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">
+                          {formatDate(e.expenseDate)}
                         </span>
+                        <Badge variant="secondary">
+                          {categoryName.get(e.categoryId) ?? "—"}
+                        </Badge>
+                        {e.odometer != null && (
+                          <span className="text-xs text-muted-foreground">
+                            {formatMiles(e.odometer)}
+                          </span>
+                        )}
+                      </div>
+                      {(e.vendor || e.notes) && (
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">
+                          {[e.vendor, e.notes].filter(Boolean).join(" — ")}
+                        </p>
+                      )}
+                      {e.gallons && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {parseFloat(e.gallons).toFixed(2)} gal
+                          {e.pricePerGallon
+                            ? ` @ $${parseFloat(e.pricePerGallon).toFixed(3)}/gal`
+                            : ""}
+                        </p>
                       )}
                     </div>
-                    {(e.vendor || e.notes) && (
-                      <p className="text-xs text-muted-foreground truncate mt-0.5">
-                        {[e.vendor, e.notes].filter(Boolean).join(" — ")}
-                      </p>
-                    )}
-                    {e.gallons && (
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {parseFloat(e.gallons).toFixed(2)} gal
-                        {e.pricePerGallon
-                          ? ` @ $${parseFloat(e.pricePerGallon).toFixed(3)}/gal`
-                          : ""}
-                      </p>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-sm font-semibold mr-2">
+                        {formatMoney(e.amount)}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => openEdit(e)}
+                        title="Edit"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive"
+                        title="Delete"
+                        onClick={() => {
+                          if (confirm("Delete this expense?")) {
+                            deleteMutation.mutate(e.id);
+                          }
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <span className="text-sm font-semibold mr-2">
-                      {formatMoney(e.amount)}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => openEdit(e)}
-                      title="Edit"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-destructive"
-                      title="Delete"
-                      onClick={() => {
-                        if (confirm("Delete this expense?")) {
-                          deleteMutation.mutate(e.id);
-                        }
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </QueryState>
 
       <ExpenseFormDialog
         open={dialogOpen}
