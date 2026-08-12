@@ -625,4 +625,21 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       }
     },
   );
+
+  app.get(
+    "/api/reports/fuel",
+    isAuthenticated,
+    async (req, res, next) => {
+      try {
+        const vehicleId = req.query.vehicleId as string | undefined;
+        if (vehicleId) {
+          const vehicle = await ownedVehicle(req, res, vehicleId);
+          if (!vehicle) return;
+        }
+        res.json(await storage.getFuelAnalytics(getUserId(req), vehicleId));
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
 }

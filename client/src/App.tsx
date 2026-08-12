@@ -12,6 +12,7 @@ import Vehicles from "@/pages/vehicles";
 import VehicleDetail from "@/pages/vehicle";
 import Maintenance from "@/pages/maintenance";
 import Value from "@/pages/value";
+import Fuel from "@/pages/fuel";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -55,6 +56,11 @@ function Router() {
       <Route path="/value">
         <Protected>
           <Value />
+        </Protected>
+      </Route>
+      <Route path="/fuel">
+        <Protected>
+          <Fuel />
         </Protected>
       </Route>
       <Route path="/settings">

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Car,
+  Fuel,
   LayoutDashboard,
   LogOut,
   Plus,
@@ -21,6 +22,7 @@ const nav = [
   { href: "/vehicles", label: "Garage", icon: Car },
   { href: "/maintenance", label: "Maintenance", icon: Wrench },
   { href: "/value", label: "Value", icon: TrendingDown },
+  { href: "/fuel", label: "Fuel", icon: Fuel },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
