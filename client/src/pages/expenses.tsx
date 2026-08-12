@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -100,11 +100,6 @@ export default function Expenses() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  function openAdd() {
-    setEditing(null);
-    setDialogOpen(true);
-  }
-
   function openEdit(expense: Expense) {
     setEditing(expense);
     setDialogOpen(true);
@@ -112,16 +107,11 @@ export default function Expenses() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
-          <p className="text-sm text-muted-foreground">
-            {filtered.length} expenses · {formatMoney(filteredTotal)}
-          </p>
-        </div>
-        <Button onClick={openAdd}>
-          <Plus className="h-4 w-4 mr-1" /> Add
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
+        <p className="text-sm text-muted-foreground">
+          {filtered.length} expenses · {formatMoney(filteredTotal)}
+        </p>
       </div>
 
       {/* Filters */}
