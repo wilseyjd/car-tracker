@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -20,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { todayISO } from "@/lib/format";
+import { useEntityForm } from "@/hooks/use-entity-form";
 import type { Expense, ExpenseCategory, Vehicle } from "@shared/schema";
 
 interface Props {
@@ -39,6 +39,18 @@ export function invalidateExpenseData() {
   });
 }
 
+interface ExpenseFormValues {
+  vehicleId: string;
+  categoryId: string;
+  amount: string;
+  expenseDate: string;
+  odometer: string;
+  vendor: string;
+  notes: string;
+  gallons: string;
+  pricePerGallon: string;
+}
+
 export function ExpenseFormDialog({
   open,
   onOpenChange,
@@ -54,78 +66,67 @@ export function ExpenseFormDialog({
     enabled: open,
   });
 
-  const [vehicleId, setVehicleId] = useState("");
-  const [categoryId, setCategoryId] = useState("");
-  const [amount, setAmount] = useState("");
-  const [expenseDate, setExpenseDate] = useState(todayISO());
-  const [odometer, setOdometer] = useState("");
-  const [vendor, setVendor] = useState("");
-  const [notes, setNotes] = useState("");
-  const [gallons, setGallons] = useState("");
-  const [pricePerGallon, setPricePerGallon] = useState("");
-
-  // Reset form whenever the dialog opens
-  useEffect(() => {
-    if (!open) return;
-    setVehicleId(expense?.vehicleId ?? defaultVehicleId ?? "");
-    setCategoryId(expense?.categoryId ?? "");
-    setAmount(expense?.amount ?? "");
-    setExpenseDate(expense?.expenseDate ?? todayISO());
-    setOdometer(expense?.odometer != null ? String(expense.odometer) : "");
-    setVendor(expense?.vendor ?? "");
-    setNotes(expense?.notes ?? "");
-    setGallons(expense?.gallons ?? "");
-    setPricePerGallon(expense?.pricePerGallon ?? "");
-  }, [open, expense, defaultVehicleId]);
+  const { values, setValue, isPending, handleSubmit } =
+    useEntityForm<ExpenseFormValues>({
+      open,
+      getInitialValues: () => ({
+        vehicleId: expense?.vehicleId ?? defaultVehicleId ?? "",
+        categoryId: expense?.categoryId ?? "",
+        amount: expense?.amount ?? "",
+        expenseDate: expense?.expenseDate ?? todayISO(),
+        odometer: expense?.odometer != null ? String(expense.odometer) : "",
+        vendor: expense?.vendor ?? "",
+        notes: expense?.notes ?? "",
+        gallons: expense?.gallons ?? "",
+        pricePerGallon: expense?.pricePerGallon ?? "",
+      }),
+      resetDeps: [expense, defaultVehicleId],
+      validate: (v) => {
+        if (!v.vehicleId) return "Select a vehicle";
+        if (!v.categoryId) return "Select a category";
+        if (!v.amount || Number.isNaN(parseFloat(v.amount)))
+          return "Enter a valid amount";
+        return null;
+      },
+      submit: async (v) => {
+        const payload: Record<string, unknown> = {
+          vehicleId: v.vehicleId,
+          categoryId: v.categoryId,
+          amount: v.amount,
+          expenseDate: v.expenseDate,
+          odometer: v.odometer ? parseInt(v.odometer, 10) : null,
+          vendor: v.vendor || null,
+          notes: v.notes || null,
+          gallons: isFuel && v.gallons ? v.gallons : null,
+          pricePerGallon: isFuel && v.pricePerGallon ? v.pricePerGallon : null,
+        };
+        if (expense) {
+          await apiRequest("PATCH", `/api/expenses/${expense.id}`, payload);
+        } else {
+          await apiRequest("POST", "/api/expenses", payload);
+        }
+      },
+      onSuccess: () => {
+        invalidateExpenseData();
+        onOpenChange(false);
+      },
+      successMessage: expense ? "Expense updated" : "Expense added",
+    });
+  const { vehicleId, categoryId, amount, expenseDate, odometer, vendor, notes, gallons, pricePerGallon } =
+    values;
 
   // Default the vehicle when there's only one
   useEffect(() => {
     if (open && !vehicleId && vehicles.length === 1) {
-      setVehicleId(vehicles[0].id);
+      setValue("vehicleId", vehicles[0].id);
     }
-  }, [open, vehicleId, vehicles]);
+  }, [open, vehicleId, vehicles, setValue]);
 
   const activeCategories = categories.filter(
     (c) => !c.isArchived || c.id === categoryId,
   );
   const selectedCategory = categories.find((c) => c.id === categoryId);
   const isFuel = selectedCategory?.name === "Fuel";
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, unknown> = {
-        vehicleId,
-        categoryId,
-        amount,
-        expenseDate,
-        odometer: odometer ? parseInt(odometer, 10) : null,
-        vendor: vendor || null,
-        notes: notes || null,
-        gallons: isFuel && gallons ? gallons : null,
-        pricePerGallon: isFuel && pricePerGallon ? pricePerGallon : null,
-      };
-      if (expense) {
-        await apiRequest("PATCH", `/api/expenses/${expense.id}`, payload);
-      } else {
-        await apiRequest("POST", "/api/expenses", payload);
-      }
-    },
-    onSuccess: () => {
-      invalidateExpenseData();
-      toast.success(expense ? "Expense updated" : "Expense added");
-      onOpenChange(false);
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!vehicleId) return toast.error("Select a vehicle");
-    if (!categoryId) return toast.error("Select a category");
-    if (!amount || Number.isNaN(parseFloat(amount)))
-      return toast.error("Enter a valid amount");
-    mutation.mutate();
-  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -137,7 +138,10 @@ export function ExpenseFormDialog({
           {vehicles.length !== 1 && (
             <div className="space-y-1.5">
               <Label>Vehicle</Label>
-              <Select value={vehicleId} onValueChange={setVehicleId}>
+              <Select
+                value={vehicleId}
+                onValueChange={(v) => setValue("vehicleId", v)}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select vehicle" />
                 </SelectTrigger>
@@ -162,7 +166,7 @@ export function ExpenseFormDialog({
                 min="0"
                 placeholder="0.00"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => setValue("amount", e.target.value)}
                 required
               />
             </div>
@@ -172,7 +176,7 @@ export function ExpenseFormDialog({
                 id="expenseDate"
                 type="date"
                 value={expenseDate}
-                onChange={(e) => setExpenseDate(e.target.value)}
+                onChange={(e) => setValue("expenseDate", e.target.value)}
                 required
               />
             </div>
@@ -180,7 +184,10 @@ export function ExpenseFormDialog({
 
           <div className="space-y-1.5">
             <Label>Category</Label>
-            <Select value={categoryId} onValueChange={setCategoryId}>
+            <Select
+              value={categoryId}
+              onValueChange={(v) => setValue("categoryId", v)}
+            >
               <SelectTrigger>
                 <SelectValue placeholder="Select category" />
               </SelectTrigger>
@@ -205,7 +212,7 @@ export function ExpenseFormDialog({
                   min="0"
                   placeholder="12.5"
                   value={gallons}
-                  onChange={(e) => setGallons(e.target.value)}
+                  onChange={(e) => setValue("gallons", e.target.value)}
                 />
               </div>
               <div className="space-y-1.5">
@@ -217,7 +224,7 @@ export function ExpenseFormDialog({
                   min="0"
                   placeholder="3.499"
                   value={pricePerGallon}
-                  onChange={(e) => setPricePerGallon(e.target.value)}
+                  onChange={(e) => setValue("pricePerGallon", e.target.value)}
                 />
               </div>
             </div>
@@ -232,7 +239,7 @@ export function ExpenseFormDialog({
                 min="0"
                 placeholder="Optional"
                 value={odometer}
-                onChange={(e) => setOdometer(e.target.value)}
+                onChange={(e) => setValue("odometer", e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
@@ -241,7 +248,7 @@ export function ExpenseFormDialog({
                 id="vendor"
                 placeholder="Optional"
                 value={vendor}
-                onChange={(e) => setVendor(e.target.value)}
+                onChange={(e) => setValue("vendor", e.target.value)}
               />
             </div>
           </div>
@@ -253,7 +260,7 @@ export function ExpenseFormDialog({
               placeholder="Optional"
               rows={2}
               value={notes}
-              onChange={(e) => setNotes(e.target.value)}
+              onChange={(e) => setValue("notes", e.target.value)}
             />
           </div>
 
@@ -265,12 +272,8 @@ export function ExpenseFormDialog({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending
-                ? "Saving..."
-                : expense
-                  ? "Save Changes"
-                  : "Add Expense"}
+            <Button type="submit" disabled={isPending}>
+              {isPending ? "Saving..." : expense ? "Save Changes" : "Add Expense"}
             </Button>
           </div>
         </form>
